@@ -106,7 +106,7 @@ def build_sql_alertas_final_segment_correto_expr(alias: str = "n") -> str:
         ")"
         ")"
     )
-    return f"({normalized_expr} LIKE '%correto' OR {normalized_expr} LIKE '%correta')"
+    return f"({normalized_expr} LIKE '%%correto' OR {normalized_expr} LIKE '%%correta')"
 
 
 def build_sql_queue_status_expr(alias: str = "n", note_status_expr: str | None = None) -> str:
