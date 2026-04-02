@@ -6,19 +6,31 @@ import re
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from datetime import date, datetime
-from typing import Iterable
+from typing import Iterable, Optional
 from zoneinfo import ZoneInfo
 
 from openpyxl import load_workbook, Workbook
 
-from .fiscal_status import compute_final_note_status
+from .db import get_conn
+from .fiscal_status import compute_final_note_status, compute_final_queue_status
 from .nfse_keys import gerar_chave_nfse
+from .notas_repo import STATUS_FILA_EXPR, STATUS_FILA_LABEL_EXPR
 
 SHEET_TODAS = "Todas as Notas"
 SHEET_DIVERGENTES = "Notas Divergentes"
 SHEET_CORRETAS = "Notas Corretas"
 
 DIA_PROCESSADO_COL = "dia processado"
+STATUS_FILA_COL = "Status"
+DIVERGENCIA_FILA_COL = "Divergência"
+PRIORIDADE_FILA_COL = "Prioridade"
+RESPONSAVEL_FILA_COL = "Responsável"
+FILA_EXPORT_COLS = [
+    STATUS_FILA_COL,
+    DIVERGENCIA_FILA_COL,
+    PRIORIDADE_FILA_COL,
+    RESPONSAVEL_FILA_COL,
+]
 
 # Namespaces comumente usados em NFS-e
 NAMESPACES = {
@@ -143,12 +155,134 @@ def _ensure_header(ws, header: str) -> int:
     return col
 
 
+def _ensure_queue_headers(ws) -> dict[str, int]:
+    positions: dict[str, int] = {}
+    for header in FILA_EXPORT_COLS:
+        positions[header] = _ensure_header(ws, header)
+    return positions
+
+
 def _index_map(headers: list[str]) -> dict[str, int]:
     return {h: i + 1 for i, h in enumerate(headers)}
 
 
 def _today_sp() -> str:
     return datetime.now(ZoneInfo("America/Sao_Paulo")).date().isoformat()
+
+
+def _build_queue_export_values(row: dict, db_row: Optional[dict] = None) -> dict[str, str]:
+    source = db_row or {}
+    status = (
+        source.get("status_fila_final")
+        or row.get(STATUS_FILA_COL)
+        or row.get("status_fila_final")
+        or row.get("status_fila")
+        or compute_final_queue_status(
+            {
+                "status_fila_manual": row.get("status_fila_manual"),
+                "status_csrf": row.get("Status CSRF"),
+                "status_irrf": row.get("Status IRRF"),
+                "status_inss": row.get("Status INSS"),
+                "status_base_calculo": row.get("Status Base de Cálculo"),
+                "status_valor_liquido": row.get("Status Valor Líquido"),
+                "alertas_fiscais": row.get("Alertas Fiscais"),
+                "observacao_interna": row.get("observacao_interna"),
+            }
+        )
+    )
+    divergencia = (
+        source.get("divergencia_fila_label")
+        or row.get(DIVERGENCIA_FILA_COL)
+        or row.get("divergencia_fila_label")
+        or ("Com divergência" if str(status).strip().lower() == "divergente" else "Sem divergência")
+    )
+    prioridade = (
+        source.get("prioridade_manual")
+        or row.get(PRIORIDADE_FILA_COL)
+        or row.get("prioridade_manual")
+        or row.get("queue_prioridade")
+        or ""
+    )
+    responsavel = (
+        source.get("responsavel")
+        or row.get(RESPONSAVEL_FILA_COL)
+        or row.get("responsavel")
+        or ""
+    )
+    return {
+        STATUS_FILA_COL: status,
+        DIVERGENCIA_FILA_COL: divergencia,
+        PRIORIDADE_FILA_COL: prioridade,
+        RESPONSAVEL_FILA_COL: responsavel,
+    }
+
+
+def _fetch_queue_state_map(cert_alias: Optional[str], keys: list[str]) -> dict[str, dict]:
+    clean_keys = [str(k).strip() for k in keys if str(k or "").strip()]
+    if not cert_alias or not clean_keys:
+        return {}
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT n.chave_nfse,
+                   {STATUS_FILA_EXPR} as status_fila_final,
+                   {STATUS_FILA_LABEL_EXPR} as divergencia_fila_label,
+                   n.prioridade_manual,
+                   n.responsavel
+            FROM nfse_notas n
+            WHERE n.cert_alias = %s
+              AND n.chave_nfse = ANY(%s)
+            """,
+            (cert_alias, clean_keys),
+        ).fetchall()
+    return {str(row["chave_nfse"]).strip(): dict(row) for row in rows if row.get("chave_nfse")}
+
+
+def _enrich_rows_with_queue_state(rows: list[dict], cert_alias: Optional[str]) -> list[dict]:
+    key_map: dict[str, dict] = {}
+    for row in rows:
+        key = _get_key(row)
+        if key:
+            key_map[key] = row
+    queue_state = _fetch_queue_state_map(cert_alias, list(key_map.keys()))
+
+    enriched: list[dict] = []
+    for row in rows:
+        current = dict(row)
+        queue_values = _build_queue_export_values(current, queue_state.get(_get_key(current)))
+        current.update(queue_values)
+        enriched.append(current)
+    return enriched
+
+
+def _sheet_row_key(ws, row_idx: int) -> str:
+    headers = _get_headers(ws)
+    hmap = _index_map(headers)
+    for header in ["Chave de Acesso", "chave_nfse", "N° Documento"]:
+        col = hmap.get(header)
+        if not col:
+            continue
+        value = ws.cell(row=row_idx, column=col).value
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _backfill_queue_columns(ws, cert_alias: Optional[str]) -> None:
+    _ensure_queue_headers(ws)
+    headers = _get_headers(ws)
+    hmap = _index_map(headers)
+    keys: list[str] = []
+    for row_idx in range(2, ws.max_row + 1):
+        key = _sheet_row_key(ws, row_idx)
+        if key:
+            keys.append(key)
+    queue_state = _fetch_queue_state_map(cert_alias, keys)
+    for row_idx in range(2, ws.max_row + 1):
+        key = _sheet_row_key(ws, row_idx)
+        values = _build_queue_export_values({}, queue_state.get(key))
+        for header, value in values.items():
+            ws.cell(row=row_idx, column=hmap[header], value=value)
 
 
 def _divergente(d: dict) -> bool:
@@ -211,7 +345,13 @@ def _append_rows(ws, headers: list[str], rows: Iterable[dict], dia_proc_col: int
     return added
 
 
-def atualizar_planilha_incremental(converter, caminho_planilha: str, novos_dados: list[dict], xml_dir: str = None) -> tuple[int, int]:
+def atualizar_planilha_incremental(
+    converter,
+    caminho_planilha: str,
+    novos_dados: list[dict],
+    xml_dir: str = None,
+    cert_alias: Optional[str] = None,
+) -> tuple[int, int]:
     """Atualiza planilha XLSX sem sobrescrever histórico (append-only).
 
     Regras (item 9):
@@ -223,6 +363,8 @@ def atualizar_planilha_incremental(converter, caminho_planilha: str, novos_dados
     """
     if not novos_dados:
         return (0, 0)
+
+    novos_dados = _enrich_rows_with_queue_state(novos_dados, cert_alias)
 
     # garante chave_nfse como fallback
     for d in novos_dados:
@@ -243,10 +385,17 @@ def atualizar_planilha_incremental(converter, caminho_planilha: str, novos_dados
                 continue
             ws = wb[sheet]
             dia_col = _ensure_header(ws, DIA_PROCESSADO_COL)
+            queue_cols = _ensure_queue_headers(ws)
+            sheet_keys = [_sheet_row_key(ws, r) for r in range(2, ws.max_row + 1)]
+            queue_state_map = _fetch_queue_state_map(cert_alias, sheet_keys)
             # preencher para todas as linhas existentes (todas são novas)
             for r in range(2, ws.max_row + 1):
                 if ws.cell(row=r, column=dia_col).value in (None, ""):
                     ws.cell(row=r, column=dia_col, value=dia_proc)
+                key = _sheet_row_key(ws, r)
+                queue_values = _build_queue_export_values({}, queue_state_map.get(key))
+                for header, value in queue_values.items():
+                    ws.cell(row=r, column=queue_cols[header], value=value)
         wb.save(caminho_planilha)
         return (0, len(novos_dados))
 
@@ -307,7 +456,9 @@ def atualizar_planilha_incremental(converter, caminho_planilha: str, novos_dados
     # ========================================================================
 
     dia_col_all = _ensure_header(ws_all, DIA_PROCESSADO_COL)
+    _ensure_queue_headers(ws_all)
     headers_all = _get_headers(ws_all)  # refresh (inclui dia processado se foi criado)
+    _backfill_queue_columns(ws_all, cert_alias)
     existing_keys = _read_existing_keys(ws_all)
 
     to_add_all = []
@@ -338,6 +489,7 @@ def atualizar_planilha_incremental(converter, caminho_planilha: str, novos_dados
                 ws.cell(row=1, column=headers_all.index(h) + 1, value=h)
             headers = headers_all[:]
         dia_col = _ensure_header(ws, DIA_PROCESSADO_COL)
+        _ensure_queue_headers(ws)
         return headers, dia_col
 
     ws_div = wb[SHEET_DIVERGENTES]
@@ -345,6 +497,10 @@ def atualizar_planilha_incremental(converter, caminho_planilha: str, novos_dados
 
     headers_div, dia_col_div = sync_headers(ws_div)
     headers_ok, dia_col_ok = sync_headers(ws_ok)
+    headers_div = _get_headers(ws_div)
+    headers_ok = _get_headers(ws_ok)
+    _backfill_queue_columns(ws_div, cert_alias)
+    _backfill_queue_columns(ws_ok, cert_alias)
 
     # append
     added = 0

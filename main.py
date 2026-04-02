@@ -301,7 +301,12 @@ def main():
         caminho_planilha = os.path.join(saida_dir, nome_arquivo)
 
         print(f"💾 Salvando/atualizando planilha: {caminho_planilha}")
-        existentes, adicionados = atualizar_planilha_incremental(converter, caminho_planilha, dados)
+        existentes, adicionados = atualizar_planilha_incremental(
+            converter,
+            caminho_planilha,
+            dados,
+            cert_alias=cert_alias,
+        )
         print(f"📊 Planilha atualizada: {existentes} já existiam, {adicionados} novos adicionados → {os.path.basename(caminho_planilha)}")
 
         planilhas_geradas = [caminho_planilha]

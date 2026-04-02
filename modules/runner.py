@@ -205,7 +205,12 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                 planilha_nome = f"auditoria_nfse_{cert_alias}_{nome_periodo}.xlsx"
                 caminho_planilha = os.path.join(planilhas_dir, planilha_nome)
 
-            existentes, adicionados = atualizar_planilha_incremental(converter, caminho_planilha, dados)
+            existentes, adicionados = atualizar_planilha_incremental(
+                converter,
+                caminho_planilha,
+                dados,
+                cert_alias=cert_alias,
+            )
             logger.info(
                 "Planilha atualizada",
                 {
