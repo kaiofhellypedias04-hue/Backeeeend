@@ -1118,6 +1118,10 @@ def download_relatorio_csv(processo_id: str):
         ("Status INSS",             "status_inss"),
         ("Alertas Fiscais",         "alertas_fiscais"),
         ("dia processado",          "dia_processado"),
+        ("Status",                  "status_fila_final"),
+        ("Divergência",             "divergencia_fila_label"),
+        ("Prioridade",              "prioridade_manual"),
+        ("Responsável",             "responsavel"),
     ]
 
     output = io.StringIO()
