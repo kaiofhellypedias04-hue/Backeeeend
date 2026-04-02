@@ -1,0 +1,20 @@
+[
+  {
+    "alias": "03_ANGULO",
+    "cnpj": "00000000000100",
+    "pfxPath": "C:/caminho/03.pfx",
+    "passEnv": "PFX_PASS_03"
+  },
+  {
+    "alias": "20_CANOPUS_TERESINA",
+    "cnpj": "00000000000100",
+    "pfxPath": "C:/caminho/20.pfx",
+    "passEnv": "PFX_PASS_20"
+  },
+  {
+    "alias": "28_CANOPUS_GRAN_VILLAGE",
+    "cnpj": "00000000000100",
+    "pfxPath": "C:/caminho/28.pfx",
+    "passEnv": "PFX_PASS_28"
+  }
+]

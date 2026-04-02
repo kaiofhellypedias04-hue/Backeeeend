@@ -1,0 +1,22 @@
+{
+  "name": "test_planilha",
+  "version": "1.0.0",
+  "description": "Este projeto baixa NFS-e (XML/PDF) do Portal Nacional via Playwright (Node.js), processa os XMLs, consulta dados de CNPJ (com cache em Postgres) e mantém planilhas **mensais incrementais** sem duplicar.",
+  "main": "playwright_nfse_download.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "install-browsers": "playwright install",
+    "download": "node playwright_nfse_download.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.13.5",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "pg": "^8.19.0",
+    "playwright": "^1.58.2"
+  }
+}

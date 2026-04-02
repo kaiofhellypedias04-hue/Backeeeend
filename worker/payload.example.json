@@ -1,0 +1,18 @@
+{
+  "executionId": "worker-run-001",
+  "clientId": "my-client",
+  "certificateId": "cert-001",
+  "credentialId": "cred-001",
+  "startDate": "2024-10-01",
+  "endDate": "2024-10-31",
+  "headless": true,
+  "tipoNota": "tomados",
+  "loginType": "certificado",
+  "baseDir": "./data",
+  "chunkDays": 30,
+  "debug": false,
+  "executionConfig": {
+    "consultar_api": true
+  }
+}
+

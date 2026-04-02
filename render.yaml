@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: backend-render-ready
+    env: docker
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /health
+    disk:
+      name: backend-data
+      mountPath: /var/data
+      sizeGB: 5
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      # O Chromium do Playwright e os dados de runtime precisam existir no ambiente final do container.
+      # A instalacao do browser acontece no build da imagem Docker.
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: /ms-playwright
+      # Runtime, certificados, credenciais e segredos precisam ficar no disco persistente.
+      - key: APP_DATA_DIR
+        value: /var/data/backend
+      - key: DATA_DIR
+        value: /var/data/backend/saida
+      - key: OUTPUT_DIR
+        value: /var/data/backend/saida
+      - key: TEMP_DIR
+        value: /var/data/backend/temp
+      # Certs, credentials.json e secrets.runtime.json devem permanecer no disk mount.
+      - key: CERTS_DIR
+        value: /var/data/backend/certs
+      - key: CERTS_JSON_PATH
+        value: /var/data/backend/certs/certs.json
+      - key: CREDENTIALS_JSON_PATH
+        value: /var/data/backend/credentials.json
+      - key: SECRETS_FILE_PATH
+        value: /var/data/backend/secrets.runtime.json
+      - key: DB_SSLMODE
+        value: require
+      - key: ENABLE_KEYRING_FALLBACK
+        value: "false"
+      - key: PLAYWRIGHT_TIMEOUT_MS
+        value: "300000"
