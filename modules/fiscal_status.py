@@ -150,6 +150,17 @@ def is_alertas_fiscais_final_segment_correto(alertas_fiscais: Any) -> bool:
     return normalized.endswith("correto") or normalized.endswith("correta")
 
 
+def has_real_alertas_fiscais_divergencia(alertas_fiscais: Any) -> bool:
+    normalized = normalize_text_for_suffix_match(alertas_fiscais)
+    if not normalized:
+        return False
+    if "base zerada:" in normalized:
+        return True
+    if "diverg" in normalized:
+        return True
+    return "correto" not in normalized and "correta" not in normalized
+
+
 def is_observacao_fiscal_final_segment_correto(observacao_fiscal: Any) -> bool:
     last_segment = _last_non_empty_pipe_segment(observacao_fiscal)
     if not last_segment:
@@ -164,6 +175,8 @@ def compute_final_queue_status(payload: dict[str, Any], fields: Iterable[str] = 
         return manual
     observacao_norm = normalize_text_for_suffix_match(payload.get("observacao_interna"))
     if "diverg" in observacao_norm:
+        return "divergente"
+    if has_real_alertas_fiscais_divergencia(payload.get("alertas_fiscais")):
         return "divergente"
     alertas_norm = normalize_text_for_suffix_match(payload.get("alertas_fiscais"))
     if "correto" in alertas_norm or "correta" in alertas_norm:
@@ -222,6 +235,10 @@ def build_sql_queue_status_expr(alias: str = "n", note_status_expr: str | None =
     note_expr = note_status_expr or build_sql_status_expr(alias)
     manual_expr = f"NULLIF(BTRIM({alias}.status_fila_manual), '')"
     observacao_diverg_expr = f"LOWER(COALESCE({alias}.observacao_interna, '')) LIKE '%%diverg%%'"
+    alertas_diverg_expr = (
+        f"LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%base zerada:%%' "
+        f"OR LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%diverg%%'"
+    )
     alertas_ok_expr = (
         f"LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%correto%%' "
         f"OR LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%correta%%'"
@@ -231,6 +248,7 @@ def build_sql_queue_status_expr(alias: str = "n", note_status_expr: str | None =
     CASE
       WHEN {manual_expr} IS NOT NULL THEN {manual_expr}
       WHEN {observacao_diverg_expr} THEN 'divergente'
+      WHEN {alertas_diverg_expr} THEN 'divergente'
       WHEN {alertas_ok_expr} THEN 'correta'
       WHEN {alert_real_expr} THEN 'divergente'
       ELSE {note_expr}
