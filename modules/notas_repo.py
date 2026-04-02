@@ -9,13 +9,19 @@ from psycopg.types.json import Jsonb
 
 from .db import get_conn
 from .nfse_keys import gerar_chave_nfse
-from .fiscal_status import build_sql_status_expr
+from .fiscal_status import build_sql_queue_status_expr, build_sql_status_expr
 
 
 STATUS_EXPR = build_sql_status_expr("n")
 
-STATUS_FILA_EXPR = f"""COALESCE(NULLIF(n.status_fila_manual, ''), {STATUS_EXPR})"""
+STATUS_FILA_EXPR = build_sql_queue_status_expr("n", note_status_expr=STATUS_EXPR)
 STATUS_FILA_FILTER_EXPR = f"LOWER(BTRIM(COALESCE({STATUS_FILA_EXPR}, '')))"
+STATUS_FILA_DIVERGENCIA_EXPR = (
+    f"CASE WHEN LOWER(BTRIM(COALESCE({STATUS_FILA_EXPR}, ''))) = 'divergente' THEN TRUE ELSE FALSE END"
+)
+STATUS_FILA_LABEL_EXPR = (
+    f"CASE WHEN {STATUS_FILA_DIVERGENCIA_EXPR} THEN 'Com divergência' ELSE 'Sem divergência' END"
+)
 
 
 def garantir_schema_nfse_notas():
@@ -705,6 +711,9 @@ def listar_notas_por_processo(
                    {STATUS_EXPR} as status,
                    {STATUS_FILA_EXPR} as status_fila,
                    {STATUS_FILA_EXPR} as status_exibicao,
+                   {STATUS_FILA_EXPR} as status_fila_final,
+                   {STATUS_FILA_DIVERGENCIA_EXPR} as divergencia_fila_final,
+                   {STATUS_FILA_LABEL_EXPR} as divergencia_fila_label,
                    n.incidencia_iss,
                    n.data_pagamento,
                    n.codigo_servico,
@@ -794,6 +803,9 @@ def listar_notas_agrupadas(filters: Optional[dict] = None, page: int = 1, page_s
                    {STATUS_EXPR} as status,
                    {STATUS_FILA_EXPR} as status_fila,
                    {STATUS_FILA_EXPR} as status_exibicao,
+                   {STATUS_FILA_EXPR} as status_fila_final,
+                   {STATUS_FILA_DIVERGENCIA_EXPR} as divergencia_fila_final,
+                   {STATUS_FILA_LABEL_EXPR} as divergencia_fila_label,
                    n.alertas_fiscais,
                    n.observacao_interna,
                    n.status_fila_manual,

@@ -2,7 +2,12 @@ import unittest
 from datetime import datetime
 
 from modules.export_utils import serialize_export_value
-from modules.fiscal_status import compute_base_calculation_status, compute_final_note_status
+from modules.fiscal_status import (
+    compute_base_calculation_status,
+    compute_final_note_status,
+    compute_final_queue_status,
+    is_alertas_fiscais_final_segment_correto,
+)
 
 
 class FiscalStatusTests(unittest.TestCase):
@@ -43,6 +48,82 @@ class FiscalStatusTests(unittest.TestCase):
         expected = build_sql_status_expr("n").strip()
         self.assertEqual(STATUS_EXPR.strip(), expected, "STATUS_EXPR deve usar regra centralizada")
 
+    def test_alerta_optante_simples_correto_classifica_fila_como_correta(self):
+        payload = {
+            "status_fila_manual": None,
+            "status_csrf": "ok",
+            "status_irrf": "ok",
+            "status_inss": "ok",
+            "status_base_calculo": "ok",
+            "status_valor_liquido": "ok",
+            "alertas_fiscais": "Optante Simples Correto",
+        }
+        self.assertTrue(is_alertas_fiscais_final_segment_correto(payload["alertas_fiscais"]))
+        self.assertEqual(compute_final_queue_status(payload), "correta")
+
+    def test_alerta_mei_correto_classifica_fila_como_correta(self):
+        payload = {
+            "status_fila_manual": None,
+            "status_csrf": "ok",
+            "status_irrf": "ok",
+            "status_inss": "ok",
+            "status_base_calculo": "ok",
+            "status_valor_liquido": "ok",
+            "alertas_fiscais": "MEI Correto",
+        }
+        self.assertTrue(is_alertas_fiscais_final_segment_correto(payload["alertas_fiscais"]))
+        self.assertEqual(compute_final_queue_status(payload), "correta")
+
+    def test_alerta_composto_usa_ultimo_trecho_relevante(self):
+        payload = {
+            "status_fila_manual": None,
+            "status_csrf": "ok",
+            "status_irrf": "ok",
+            "status_inss": "ok",
+            "status_base_calculo": "ok",
+            "status_valor_liquido": "ok",
+            "alertas_fiscais": "BASE ZERADA: INSS retido (10,00) mas base de cálculo é zero. Verificar! | Optante Simples Correto",
+        }
+        self.assertTrue(is_alertas_fiscais_final_segment_correto(payload["alertas_fiscais"]))
+        self.assertEqual(compute_final_queue_status(payload), "correta")
+
+    def test_alerta_divergente_irrf_permanece_divergente(self):
+        payload = {
+            "status_fila_manual": None,
+            "status_csrf": "ok",
+            "status_irrf": "divergente",
+            "status_inss": "ok",
+            "status_base_calculo": "ok",
+            "status_valor_liquido": "ok",
+            "alertas_fiscais": "IRRF devido e não retido para código de serviço",
+        }
+        self.assertFalse(is_alertas_fiscais_final_segment_correto(payload["alertas_fiscais"]))
+        self.assertEqual(compute_final_queue_status(payload), "divergente")
+
+    def test_alerta_divergente_csrf_permanece_divergente(self):
+        payload = {
+            "status_fila_manual": None,
+            "status_csrf": "divergente",
+            "status_irrf": "ok",
+            "status_inss": "ok",
+            "status_base_calculo": "ok",
+            "status_valor_liquido": "ok",
+            "alertas_fiscais": "CSRF retido divergente no comparativo",
+        }
+        self.assertFalse(is_alertas_fiscais_final_segment_correto(payload["alertas_fiscais"]))
+        self.assertEqual(compute_final_queue_status(payload), "divergente")
+
+    def test_status_fila_manual_tem_precedencia_total(self):
+        payload = {
+            "status_fila_manual": "divergente",
+            "status_csrf": "ok",
+            "status_irrf": "ok",
+            "status_inss": "ok",
+            "status_base_calculo": "ok",
+            "status_valor_liquido": "ok",
+            "alertas_fiscais": "Optante Simples Correto",
+        }
+        self.assertEqual(compute_final_queue_status(payload), "divergente")
+
 if __name__ == "__main__":
     unittest.main()
-
