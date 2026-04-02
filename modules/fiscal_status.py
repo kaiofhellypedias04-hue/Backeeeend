@@ -60,8 +60,8 @@ def normalize_text_for_suffix_match(value: Any) -> str:
     return txt
 
 
-def _last_non_empty_alert_segment(alertas_fiscais: Any) -> str:
-    parts = str(alertas_fiscais or "").split("|")
+def _last_non_empty_pipe_segment(value: Any) -> str:
+    parts = str(value or "").split("|")
     for part in reversed(parts):
         chunk = part.strip()
         if chunk:
@@ -70,7 +70,15 @@ def _last_non_empty_alert_segment(alertas_fiscais: Any) -> str:
 
 
 def is_alertas_fiscais_final_segment_correto(alertas_fiscais: Any) -> bool:
-    last_segment = _last_non_empty_alert_segment(alertas_fiscais)
+    last_segment = _last_non_empty_pipe_segment(alertas_fiscais)
+    if not last_segment:
+        return False
+    normalized = normalize_text_for_suffix_match(last_segment)
+    return normalized.endswith("correto") or normalized.endswith("correta")
+
+
+def is_observacao_fiscal_final_segment_correto(observacao_fiscal: Any) -> bool:
+    last_segment = _last_non_empty_pipe_segment(observacao_fiscal)
     if not last_segment:
         return False
     normalized = normalize_text_for_suffix_match(last_segment)
@@ -81,19 +89,26 @@ def compute_final_queue_status(payload: dict[str, Any], fields: Iterable[str] = 
     manual = normalize_status_value(payload.get("status_fila_manual"))
     if manual:
         return manual
-    if is_alertas_fiscais_final_segment_correto(payload.get("alertas_fiscais")):
+    if normalize_status_value(payload.get("alertas_fiscais")):
+        return "divergente"
+    if is_observacao_fiscal_final_segment_correto(payload.get("observacao_interna")):
         return "correta"
     return compute_final_note_status(payload, fields=fields)
 
 
-def build_sql_alertas_final_segment_correto_expr(alias: str = "n") -> str:
+def _build_sql_final_segment_expr(alias: str, field_name: str) -> str:
     last_segment_expr = f"""(
         SELECT BTRIM(part)
-        FROM unnest(regexp_split_to_array(COALESCE({alias}.alertas_fiscais, ''), '\\\\|')) WITH ORDINALITY AS parts(part, ord)
+        FROM unnest(regexp_split_to_array(COALESCE({alias}.{field_name}, ''), '\\\\|')) WITH ORDINALITY AS parts(part, ord)
         WHERE BTRIM(part) <> ''
         ORDER BY ord DESC
         LIMIT 1
     )"""
+    return last_segment_expr
+
+
+def build_sql_observacao_final_segment_correto_expr(alias: str = "n") -> str:
+    last_segment_expr = _build_sql_final_segment_expr(alias, "observacao_interna")
     normalized_expr = (
         "LOWER("
         "REGEXP_REPLACE("
@@ -112,11 +127,13 @@ def build_sql_alertas_final_segment_correto_expr(alias: str = "n") -> str:
 def build_sql_queue_status_expr(alias: str = "n", note_status_expr: str | None = None) -> str:
     note_expr = note_status_expr or build_sql_status_expr(alias)
     manual_expr = f"NULLIF(BTRIM({alias}.status_fila_manual), '')"
-    alert_ok_expr = build_sql_alertas_final_segment_correto_expr(alias)
+    alert_real_expr = f"NULLIF(BTRIM(COALESCE({alias}.alertas_fiscais, '')), '') IS NOT NULL"
+    observacao_ok_expr = build_sql_observacao_final_segment_correto_expr(alias)
     return f"""(
     CASE
       WHEN {manual_expr} IS NOT NULL THEN {manual_expr}
-      WHEN {alert_ok_expr} THEN 'correta'
+      WHEN {alert_real_expr} THEN 'divergente'
+      WHEN {observacao_ok_expr} THEN 'correta'
       ELSE {note_expr}
     END
 )"""

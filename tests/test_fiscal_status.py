@@ -6,7 +6,7 @@ from modules.fiscal_status import (
     compute_base_calculation_status,
     compute_final_note_status,
     compute_final_queue_status,
-    is_alertas_fiscais_final_segment_correto,
+    is_observacao_fiscal_final_segment_correto,
 )
 
 
@@ -48,7 +48,7 @@ class FiscalStatusTests(unittest.TestCase):
         expected = build_sql_status_expr("n").strip()
         self.assertEqual(STATUS_EXPR.strip(), expected, "STATUS_EXPR deve usar regra centralizada")
 
-    def test_alerta_optante_simples_correto_classifica_fila_como_correta(self):
+    def test_observacao_optante_simples_correto_classifica_fila_como_correta(self):
         payload = {
             "status_fila_manual": None,
             "status_csrf": "ok",
@@ -56,12 +56,13 @@ class FiscalStatusTests(unittest.TestCase):
             "status_inss": "ok",
             "status_base_calculo": "ok",
             "status_valor_liquido": "ok",
-            "alertas_fiscais": "Optante Simples Correto",
+            "alertas_fiscais": "",
+            "observacao_interna": "Optante Simples Correto",
         }
-        self.assertTrue(is_alertas_fiscais_final_segment_correto(payload["alertas_fiscais"]))
+        self.assertTrue(is_observacao_fiscal_final_segment_correto(payload["observacao_interna"]))
         self.assertEqual(compute_final_queue_status(payload), "correta")
 
-    def test_alerta_mei_correto_classifica_fila_como_correta(self):
+    def test_observacao_mei_correto_classifica_fila_como_correta(self):
         payload = {
             "status_fila_manual": None,
             "status_csrf": "ok",
@@ -69,12 +70,13 @@ class FiscalStatusTests(unittest.TestCase):
             "status_inss": "ok",
             "status_base_calculo": "ok",
             "status_valor_liquido": "ok",
-            "alertas_fiscais": "MEI Correto",
+            "alertas_fiscais": "",
+            "observacao_interna": "MEI Correto",
         }
-        self.assertTrue(is_alertas_fiscais_final_segment_correto(payload["alertas_fiscais"]))
+        self.assertTrue(is_observacao_fiscal_final_segment_correto(payload["observacao_interna"]))
         self.assertEqual(compute_final_queue_status(payload), "correta")
 
-    def test_alerta_composto_usa_ultimo_trecho_relevante(self):
+    def test_observacao_composta_usa_ultimo_trecho_relevante(self):
         payload = {
             "status_fila_manual": None,
             "status_csrf": "ok",
@@ -82,9 +84,10 @@ class FiscalStatusTests(unittest.TestCase):
             "status_inss": "ok",
             "status_base_calculo": "ok",
             "status_valor_liquido": "ok",
-            "alertas_fiscais": "BASE ZERADA: INSS retido (10,00) mas base de cálculo é zero. Verificar! | Optante Simples Correto",
+            "alertas_fiscais": "",
+            "observacao_interna": "BASE ZERADA: INSS retido (10,00) mas base de cálculo é zero. Verificar! | Optante Simples Correto",
         }
-        self.assertTrue(is_alertas_fiscais_final_segment_correto(payload["alertas_fiscais"]))
+        self.assertTrue(is_observacao_fiscal_final_segment_correto(payload["observacao_interna"]))
         self.assertEqual(compute_final_queue_status(payload), "correta")
 
     def test_alerta_divergente_irrf_permanece_divergente(self):
@@ -96,8 +99,8 @@ class FiscalStatusTests(unittest.TestCase):
             "status_base_calculo": "ok",
             "status_valor_liquido": "ok",
             "alertas_fiscais": "IRRF devido e não retido para código de serviço",
+            "observacao_interna": "Optante Simples Correto",
         }
-        self.assertFalse(is_alertas_fiscais_final_segment_correto(payload["alertas_fiscais"]))
         self.assertEqual(compute_final_queue_status(payload), "divergente")
 
     def test_alerta_divergente_csrf_permanece_divergente(self):
@@ -109,8 +112,8 @@ class FiscalStatusTests(unittest.TestCase):
             "status_base_calculo": "ok",
             "status_valor_liquido": "ok",
             "alertas_fiscais": "CSRF retido divergente no comparativo",
+            "observacao_interna": "MEI Correto",
         }
-        self.assertFalse(is_alertas_fiscais_final_segment_correto(payload["alertas_fiscais"]))
         self.assertEqual(compute_final_queue_status(payload), "divergente")
 
     def test_status_fila_manual_tem_precedencia_total(self):
@@ -121,7 +124,8 @@ class FiscalStatusTests(unittest.TestCase):
             "status_inss": "ok",
             "status_base_calculo": "ok",
             "status_valor_liquido": "ok",
-            "alertas_fiscais": "Optante Simples Correto",
+            "alertas_fiscais": "IRRF devido e não retido para código de serviço",
+            "observacao_interna": "Optante Simples Correto",
         }
         self.assertEqual(compute_final_queue_status(payload), "divergente")
 
