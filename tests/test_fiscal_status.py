@@ -15,6 +15,9 @@ class FiscalStatusTests(unittest.TestCase):
     def test_base_calculo_nao_diverge_quando_base_e_menor_que_total(self):
         self.assertEqual(compute_base_calculation_status(80.0, 100.0), "ok")
 
+    def test_base_calculo_zerada_nao_diverge_so_por_ser_menor_que_total(self):
+        self.assertEqual(compute_base_calculation_status(0.0, 100.0), "ok")
+
     def test_status_final_considera_base_calculo_divergente(self):
         payload = {
             "status_base_calculo": "divergente",

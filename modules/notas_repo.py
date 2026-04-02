@@ -9,7 +9,11 @@ from psycopg.types.json import Jsonb
 
 from .db import get_conn
 from .nfse_keys import gerar_chave_nfse
-from .fiscal_status import build_sql_queue_status_expr, build_sql_status_expr
+from .fiscal_status import (
+    build_sql_queue_status_expr,
+    build_sql_status_expr,
+    compute_base_calculation_status,
+)
 
 
 STATUS_EXPR = build_sql_status_expr("n")
@@ -422,7 +426,7 @@ def salvar_nota_nfse(cert_alias: str, processo_id: str | None, data: dict, arqui
         )
 
     status_valor_liquido = _status_compare(valor_liquido, valor_liquido_correto)
-    status_base_calculo = _status_compare(valor_bc, valor_total)
+    status_base_calculo = compute_base_calculation_status(valor_bc, valor_total)
     campos_ausentes_xml = _build_campos_ausentes_xml(data)
 
     alertas_fiscais_txt = _to_text_alertas(data.get("Alertas Fiscais"))
