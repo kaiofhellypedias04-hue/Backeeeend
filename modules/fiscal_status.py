@@ -89,10 +89,12 @@ def compute_final_queue_status(payload: dict[str, Any], fields: Iterable[str] = 
     manual = normalize_status_value(payload.get("status_fila_manual"))
     if manual:
         return manual
-    if normalize_status_value(payload.get("alertas_fiscais")):
-        return "divergente"
+    if is_alertas_fiscais_final_segment_correto(payload.get("alertas_fiscais")):
+        return "correta"
     if is_observacao_fiscal_final_segment_correto(payload.get("observacao_interna")):
         return "correta"
+    if normalize_status_value(payload.get("alertas_fiscais")):
+        return "divergente"
     return compute_final_note_status(payload, fields=fields)
 
 
@@ -124,16 +126,35 @@ def build_sql_observacao_final_segment_correto_expr(alias: str = "n") -> str:
     return f"({normalized_expr} LIKE '%%correto' OR {normalized_expr} LIKE '%%correta')"
 
 
+def build_sql_alertas_final_segment_correto_expr(alias: str = "n") -> str:
+    last_segment_expr = _build_sql_final_segment_expr(alias, "alertas_fiscais")
+    normalized_expr = (
+        "LOWER("
+        "REGEXP_REPLACE("
+        "TRANSLATE("
+        f"COALESCE({last_segment_expr}, ''), "
+        "'ÃÃ€Ã‚ÃƒÃ„Ã¡Ã Ã¢Ã£Ã¤Ã‰ÃˆÃŠÃ‹Ã©Ã¨ÃªÃ«ÃÃŒÃŽÃÃ­Ã¬Ã®Ã¯Ã“Ã’Ã”Ã•Ã–Ã³Ã²Ã´ÃµÃ¶ÃšÃ™Ã›ÃœÃºÃ¹Ã»Ã¼Ã‡Ã§', "
+        "'AAAAAaaaaaEEEEeeeeIIIIiiiiOOOOOoooooUUUUuuuuCc'"
+        "), "
+        "'\\s+', ' ', 'g'"
+        ")"
+        ")"
+    )
+    return f"({normalized_expr} LIKE '%%correto' OR {normalized_expr} LIKE '%%correta')"
+
+
 def build_sql_queue_status_expr(alias: str = "n", note_status_expr: str | None = None) -> str:
     note_expr = note_status_expr or build_sql_status_expr(alias)
     manual_expr = f"NULLIF(BTRIM({alias}.status_fila_manual), '')"
+    alertas_ok_expr = build_sql_alertas_final_segment_correto_expr(alias)
     alert_real_expr = f"NULLIF(BTRIM(COALESCE({alias}.alertas_fiscais, '')), '') IS NOT NULL"
     observacao_ok_expr = build_sql_observacao_final_segment_correto_expr(alias)
     return f"""(
     CASE
       WHEN {manual_expr} IS NOT NULL THEN {manual_expr}
-      WHEN {alert_real_expr} THEN 'divergente'
+      WHEN {alertas_ok_expr} THEN 'correta'
       WHEN {observacao_ok_expr} THEN 'correta'
+      WHEN {alert_real_expr} THEN 'divergente'
       ELSE {note_expr}
     END
 )"""
