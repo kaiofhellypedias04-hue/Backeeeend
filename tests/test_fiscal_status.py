@@ -3,6 +3,7 @@ from datetime import datetime
 
 from modules.export_utils import serialize_export_value
 from modules.fiscal_status import (
+    build_base_calculation_alert,
     compute_base_calculation_status,
     compute_final_note_status,
     compute_final_queue_status,
@@ -66,6 +67,38 @@ class FiscalStatusTests(unittest.TestCase):
     def test_base_maior_que_total_permanece_divergente(self):
         self.assertEqual(compute_base_calculation_status(101.0, 100.0), "divergente")
 
+    def test_alerta_base_zerada_para_optante_nao_mei(self):
+        self.assertEqual(
+            build_base_calculation_alert(
+                0.0,
+                100.0,
+                simples_xml="Optante S.N",
+                consulta_simples_api="Optante S.N",
+            ),
+            "BASE ZERADA: base de calculo zerada para Optante Simples. Verificar.",
+        )
+
+    def test_alerta_base_zerada_para_nao_optante(self):
+        self.assertEqual(
+            build_base_calculation_alert(
+                0.0,
+                100.0,
+                simples_xml="Não optante",
+                consulta_simples_api="Não optante",
+            ),
+            "BASE ZERADA: base de calculo zerada para Nao Optante. Verificar.",
+        )
+
+    def test_alerta_base_zerada_nao_e_gerado_para_mei(self):
+        self.assertIsNone(
+            build_base_calculation_alert(
+                0.0,
+                100.0,
+                simples_xml="MEI",
+                consulta_simples_api="Optante S.N",
+            )
+        )
+
     def test_status_final_considera_base_calculo_divergente(self):
         payload = {
             "status_base_calculo": "divergente",
@@ -99,6 +132,20 @@ class FiscalStatusTests(unittest.TestCase):
         from modules.fiscal_status import build_sql_status_expr
         expected = build_sql_status_expr("n").strip()
         self.assertEqual(STATUS_EXPR.strip(), expected, "STATUS_EXPR deve usar regra centralizada")
+
+    def test_notas_repo_anexa_alerta_sem_duplicar(self):
+        from modules.notas_repo import _append_alerta_if_missing
+
+        alerta = "BASE ZERADA: base de calculo zerada para Nao Optante. Verificar."
+        self.assertEqual(_append_alerta_if_missing(None, alerta), alerta)
+        self.assertEqual(
+            _append_alerta_if_missing("IRRF divergente", alerta),
+            "IRRF divergente | BASE ZERADA: base de calculo zerada para Nao Optante. Verificar.",
+        )
+        self.assertEqual(
+            _append_alerta_if_missing(alerta, alerta),
+            alerta,
+        )
 
     def test_alerta_optante_simples_correto_classifica_fila_como_correta(self):
         payload = {

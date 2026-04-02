@@ -75,6 +75,31 @@ def resolve_effective_tax_regime(simples_xml: Any = None, consulta_simples_api: 
     return xml_regime
 
 
+def build_base_calculation_alert(
+    valor_bc: float | None,
+    valor_total: float | None,
+    tolerance: float = 0.01,
+    *,
+    simples_xml: Any = None,
+    consulta_simples_api: Any = None,
+    codigo_servico: Any = None,
+) -> str | None:
+    if valor_bc is None or valor_total is None:
+        return None
+    if valor_total <= tolerance or abs(valor_bc) > tolerance:
+        return None
+
+    regime = resolve_effective_tax_regime(
+        simples_xml=simples_xml,
+        consulta_simples_api=consulta_simples_api,
+    )
+    if regime == "OPTANTE":
+        return "BASE ZERADA: base de calculo zerada para Optante Simples. Verificar."
+    if regime == "NAO_OPTANTE":
+        return "BASE ZERADA: base de calculo zerada para Nao Optante. Verificar."
+    return None
+
+
 def compute_base_calculation_status(
     valor_bc: float | None,
     valor_total: float | None,

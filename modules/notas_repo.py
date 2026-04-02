@@ -10,6 +10,7 @@ from psycopg.types.json import Jsonb
 from .db import get_conn
 from .nfse_keys import gerar_chave_nfse
 from .fiscal_status import (
+    build_base_calculation_alert,
     build_sql_queue_status_expr,
     build_sql_status_expr,
     compute_base_calculation_status,
@@ -161,6 +162,19 @@ def _clean_text(value: Any) -> Optional[str]:
         return None
     txt = str(value).strip()
     return txt or None
+
+
+def _append_alerta_if_missing(alertas: Optional[str], alerta: Optional[str]) -> Optional[str]:
+    alertas_txt = _to_text_alertas(alertas)
+    alerta_txt = _clean_text(alerta)
+    if not alerta_txt:
+        return alertas_txt
+    if alertas_txt:
+        existentes = [parte.strip() for parte in alertas_txt.split("|") if parte.strip()]
+        if alerta_txt in existentes:
+            return alertas_txt
+        return f"{alertas_txt} | {alerta_txt}"
+    return alerta_txt
 
 
 def _normalize_rule_text(value: Any) -> str:
@@ -436,6 +450,16 @@ def salvar_nota_nfse(cert_alias: str, processo_id: str | None, data: dict, arqui
     campos_ausentes_xml = _build_campos_ausentes_xml(data)
 
     alertas_fiscais_txt = _to_text_alertas(data.get("Alertas Fiscais"))
+    alerta_base_zerada = None
+    if status_base_calculo == "divergente":
+        alerta_base_zerada = build_base_calculation_alert(
+            valor_bc,
+            valor_total,
+            simples_xml=data.get("Simples Nacional / XML"),
+            consulta_simples_api=data.get("Consulta Simples API"),
+            codigo_servico=data.get("CÃ³digo de serviÃ§o"),
+        )
+    alertas_fiscais_txt = _append_alerta_if_missing(alertas_fiscais_txt, alerta_base_zerada)
     irrf_calculado = _to_decimal(data.get("_IRRF_Calculado"))
     csrf_calculado = _to_decimal(data.get("_CSRF_Calculado"))
     iss_calculado = _to_decimal(data.get("_ISS_Calculado"))
