@@ -426,7 +426,13 @@ def salvar_nota_nfse(cert_alias: str, processo_id: str | None, data: dict, arqui
         )
 
     status_valor_liquido = _status_compare(valor_liquido, valor_liquido_correto)
-    status_base_calculo = compute_base_calculation_status(valor_bc, valor_total)
+    status_base_calculo = compute_base_calculation_status(
+        valor_bc,
+        valor_total,
+        simples_xml=data.get("Simples Nacional / XML"),
+        consulta_simples_api=data.get("Consulta Simples API"),
+        codigo_servico=data.get("Código de serviço"),
+    )
     campos_ausentes_xml = _build_campos_ausentes_xml(data)
 
     alertas_fiscais_txt = _to_text_alertas(data.get("Alertas Fiscais"))

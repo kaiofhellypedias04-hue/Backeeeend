@@ -38,10 +38,51 @@ def compute_final_note_status(payload: dict[str, Any], fields: Iterable[str] = F
     return "correta"
 
 
+def _normalize_tax_regime_text(value: Any) -> str:
+    txt = str(value or "").strip().lower()
+    txt = " ".join(txt.split())
+    txt = unicodedata.normalize("NFD", txt)
+    return "".join(ch for ch in txt if unicodedata.category(ch) != "Mn")
+
+
+def _classify_tax_regime(value: Any) -> str:
+    normalized = _normalize_tax_regime_text(value)
+    compact = normalized.replace(".", "").replace("-", " ")
+    compact = " ".join(compact.split())
+    if not compact:
+        return ""
+    if "nao optante" in compact:
+        return "NAO_OPTANTE"
+    if "mei" in compact:
+        return "MEI"
+    if "optante" in compact or "simples" in compact:
+        return "OPTANTE"
+    return ""
+
+
+def resolve_effective_tax_regime(simples_xml: Any = None, consulta_simples_api: Any = None) -> str:
+    xml_regime = _classify_tax_regime(simples_xml)
+    api_regime = _classify_tax_regime(consulta_simples_api)
+
+    # A API tem precedência quando informa "não optante".
+    if api_regime == "NAO_OPTANTE":
+        return api_regime
+    # Mantém MEI como caso especial, inclusive quando a API vier apenas como "optante".
+    if api_regime == "MEI" or xml_regime == "MEI":
+        return "MEI"
+    if api_regime:
+        return api_regime
+    return xml_regime
+
+
 def compute_base_calculation_status(
     valor_bc: float | None,
     valor_total: float | None,
     tolerance: float = 0.01,
+    *,
+    simples_xml: Any = None,
+    consulta_simples_api: Any = None,
+    codigo_servico: Any = None,
 ) -> str:
     if valor_bc is None:
         return "ausente"
@@ -49,6 +90,13 @@ def compute_base_calculation_status(
         return "divergente"
     if valor_total is not None and valor_bc - valor_total > tolerance:
         return "divergente"
+    if valor_total is not None and valor_total > tolerance and abs(valor_bc) <= tolerance:
+        regime = resolve_effective_tax_regime(
+            simples_xml=simples_xml,
+            consulta_simples_api=consulta_simples_api,
+        )
+        if regime in {"OPTANTE", "NAO_OPTANTE"}:
+            return "divergente"
     return "ok"
 
 
