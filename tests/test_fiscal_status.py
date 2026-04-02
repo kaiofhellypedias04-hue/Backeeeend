@@ -191,6 +191,51 @@ class FiscalStatusTests(unittest.TestCase):
         }
         self.assertEqual(compute_final_queue_status(payload), "divergente")
 
+    def test_alerta_inss_esperado_com_correto_permanece_divergente(self):
+        alerta = "Optante Simples: INSS esperado (Anexo IV=SIM) para codigo 7.02, mas veio 0.00. | Optante Simples Correto"
+        self.assertTrue(has_real_alertas_fiscais_divergencia(alerta))
+        payload = {
+            "status_fila_manual": None,
+            "status_csrf": "ok",
+            "status_irrf": "ok",
+            "status_inss": "divergente",
+            "status_base_calculo": "ok",
+            "status_valor_liquido": "ok",
+            "alertas_fiscais": alerta,
+            "observacao_interna": None,
+        }
+        self.assertEqual(compute_final_queue_status(payload), "divergente")
+
+    def test_alerta_irrf_devido_com_correto_permanece_divergente(self):
+        alerta = "IRRF devido e nao retido para codigo 7.02. Deveria ser: 10.00 (1.5%) | Optante Simples Correto"
+        self.assertTrue(has_real_alertas_fiscais_divergencia(alerta))
+        payload = {
+            "status_fila_manual": None,
+            "status_csrf": "ok",
+            "status_irrf": "divergente",
+            "status_inss": "ok",
+            "status_base_calculo": "ok",
+            "status_valor_liquido": "ok",
+            "alertas_fiscais": alerta,
+            "observacao_interna": None,
+        }
+        self.assertEqual(compute_final_queue_status(payload), "divergente")
+
+    def test_alerta_csrf_devido_com_mei_correto_permanece_divergente(self):
+        alerta = "CSRF devido e nao retido para codigo 7.02. Deveria ser: 10.00 (4.65%) | MEI Correto"
+        self.assertTrue(has_real_alertas_fiscais_divergencia(alerta))
+        payload = {
+            "status_fila_manual": None,
+            "status_csrf": "divergente",
+            "status_irrf": "ok",
+            "status_inss": "ok",
+            "status_base_calculo": "ok",
+            "status_valor_liquido": "ok",
+            "alertas_fiscais": alerta,
+            "observacao_interna": None,
+        }
+        self.assertEqual(compute_final_queue_status(payload), "divergente")
+
     def test_alerta_base_zerada_nao_optante_classifica_fila_como_divergente(self):
         alerta = "BASE ZERADA: base de calculo zerada para Nao Optante. Verificar."
         self.assertTrue(has_real_alertas_fiscais_divergencia(alerta))

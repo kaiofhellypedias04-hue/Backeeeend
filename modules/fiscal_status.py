@@ -154,9 +154,18 @@ def has_real_alertas_fiscais_divergencia(alertas_fiscais: Any) -> bool:
     normalized = normalize_text_for_suffix_match(alertas_fiscais)
     if not normalized:
         return False
-    if "base zerada:" in normalized:
-        return True
-    if "diverg" in normalized:
+    divergence_markers = (
+        "base zerada:",
+        "diverg",
+        "esperado",
+        "encontrado",
+        "deveria ser",
+        "nao retido",
+        "não retido",
+        "mas veio 0.00",
+        "mas veio 0,00",
+    )
+    if any(marker in normalized for marker in divergence_markers):
         return True
     return "correto" not in normalized and "correta" not in normalized
 
@@ -237,7 +246,14 @@ def build_sql_queue_status_expr(alias: str = "n", note_status_expr: str | None =
     observacao_diverg_expr = f"LOWER(COALESCE({alias}.observacao_interna, '')) LIKE '%%diverg%%'"
     alertas_diverg_expr = (
         f"LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%base zerada:%%' "
-        f"OR LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%diverg%%'"
+        f"OR LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%diverg%%' "
+        f"OR LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%esperado%%' "
+        f"OR LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%encontrado%%' "
+        f"OR LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%deveria ser%%' "
+        f"OR LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%nao retido%%' "
+        f"OR LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%não retido%%' "
+        f"OR LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%mas veio 0.00%%' "
+        f"OR LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%mas veio 0,00%%'"
     )
     alertas_ok_expr = (
         f"LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%correto%%' "
