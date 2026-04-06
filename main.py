@@ -305,7 +305,7 @@ def main():
             converter,
             caminho_planilha,
             dados,
-            cert_alias=cert_alias,
+            cert_alias=None,
         )
         print(f"📊 Planilha atualizada: {existentes} já existiam, {adicionados} novos adicionados → {os.path.basename(caminho_planilha)}")
 
