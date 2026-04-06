@@ -17,6 +17,46 @@ from .settings import get_settings
 logger = logging.getLogger(__name__)
 
 
+def _normalize_output_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _extract_last_stage(stdout: str, stderr: str) -> str | None:
+    for text in (stderr, stdout):
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        for line in reversed(lines):
+            if line.startswith("[STAGE] "):
+                return line[len("[STAGE] ") :].strip()
+    return None
+
+
+def _build_log_tail(stdout: str, stderr: str, limit: int = 8) -> str:
+    combined: list[str] = []
+    for prefix, text in (("stderr", stderr), ("stdout", stdout)):
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        for line in lines[-limit:]:
+            combined.append(f"{prefix}: {line}")
+    if not combined:
+        return ""
+    tail = combined[-limit:]
+    return " | ".join(tail)
+
+
+def _summarize_playwright_context(stdout: str, stderr: str) -> str:
+    parts: list[str] = []
+    last_stage = _extract_last_stage(stdout, stderr)
+    if last_stage:
+        parts.append(f"ultima etapa: {last_stage}")
+    tail = _build_log_tail(stdout, stderr)
+    if tail:
+        parts.append(f"ultimos logs: {tail}")
+    return " | ".join(parts)
+
+
 def _preflight_playwright_runtime(settings) -> Optional[str]:
     if which(settings.node_bin) is None:
         return f"Node.js nao encontrado no PATH. Binario configurado: {settings.node_bin}"
@@ -185,14 +225,21 @@ def _run_node_download(
             "returncode": None,
         }
     except subprocess.TimeoutExpired as exc:
-        stdout = (exc.stdout or "").strip()
-        stderr = (exc.stderr or "").strip()
+        stdout = _normalize_output_text(exc.stdout).strip()
+        stderr = _normalize_output_text(exc.stderr).strip()
+        context_summary = _summarize_playwright_context(stdout, stderr)
+        context_suffix = f" | {context_summary}" if context_summary else ""
         return {
             "ok": False,
-            "error": f"Playwright excedeu o timeout de {settings.playwright_timeout_ms} ms",
+            "error": (
+                f"Playwright excedeu o timeout de {settings.playwright_timeout_ms} ms "
+                f"para {login_type}:{cert_alias} ({data_inicial}..{data_final}){context_suffix}"
+            ),
             "stdout": stdout,
             "stderr": stderr,
             "returncode": None,
+            "last_stage": _extract_last_stage(stdout, stderr),
+            "log_tail": _build_log_tail(stdout, stderr),
         }
     except Exception as e:
         return {
@@ -211,6 +258,8 @@ def _run_node_download(
         "stdout": stdout,
         "stderr": stderr,
         "returncode": proc.returncode,
+        "last_stage": _extract_last_stage(stdout, stderr),
+        "log_tail": _build_log_tail(stdout, stderr),
     }
 
     parsed: Optional[Dict[str, Any]] = None
@@ -329,6 +378,13 @@ def executar_fluxo_nfse_playwright(
             or (((result.get("stdout") or "").strip()[:500] + "...") if (result.get("stdout") or "").strip() else "")
             or "erro desconhecido no Playwright"
         )
+        if not result.get("ok"):
+            last_stage = result.get("last_stage")
+            log_tail = result.get("log_tail")
+            if last_stage and f"ultima etapa: {last_stage}" not in error_msg:
+                error_msg = f"{error_msg} | ultima etapa: {last_stage}"
+            if log_tail and "ultimos logs:" not in error_msg:
+                error_msg = f"{error_msg} | ultimos logs: {log_tail}"
         msg_lower = str(error_msg).lower()
         if "please run the following command to download new browsers" in msg_lower:
             error_msg = (

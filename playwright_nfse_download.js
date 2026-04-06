@@ -25,6 +25,22 @@ const PAUSE_EVERY_DOWNLOADS = 100;
 const PAUSE_MIN_MS = 60_000;
 const PAUSE_MAX_MS = 70_000;
 
+let currentStage = 'bootstrap';
+
+function setStage(stage, detail = '') {
+  currentStage = stage;
+  const suffix = detail ? ` | ${detail}` : '';
+  console.log(`[STAGE] ${stage}${suffix}`);
+}
+
+function logWarn(stage, message) {
+  console.warn(`[WARN] ${stage} | ${message}`);
+}
+
+function logItemResult(index, message) {
+  console.log(`   [item ${index}] ${message}`);
+}
+
 function parseArgs(argv) {
   const args = {};
   for (let i = 2; i < argv.length; i++) {
@@ -89,7 +105,13 @@ function readCredentials(credentialsJsonPathFromArgs) {
 }
 
 async function safeWaitNetworkIdle(page, timeoutMs = 30000) {
-  await page.waitForLoadState('networkidle', { timeout: timeoutMs }).catch(() => {});
+  try {
+    await page.waitForLoadState('networkidle', { timeout: timeoutMs });
+    return true;
+  } catch (error) {
+    logWarn(currentStage, `networkidle nao confirmado em ${timeoutMs}ms: ${error.message}`);
+    return false;
+  }
 }
 
 function getCheckpointPath(downloadDir) {
@@ -282,16 +304,25 @@ function updateActivity() {
 }
 
 async function clickAndSaveDownload(page, clickableLocator, downloadDir) {
+  const actionLabel = await clickableLocator.first().innerText().catch(() => '');
+  setStage('download.click', String(actionLabel || '').trim() || 'sem-rotulo');
   const el = clickableLocator.first();
   const visible = await el.isVisible().catch(() => false);
-  if (!visible) return null;
+  if (!visible) {
+    logWarn('download.click', `Elemento nao visivel (${String(actionLabel || '').trim() || 'sem-rotulo'})`);
+    return null;
+  }
 
   updateActivity(); // Marca atividade
 
   const downloadPromise = page.waitForEvent('download', { timeout: 45000 }).catch(() => null);
   const popupPromise = page.waitForEvent('popup', { timeout: 45000 }).catch(() => null);
 
-  await el.click({ timeout: 30000 });
+  try {
+    await el.click({ timeout: 30000 });
+  } catch (error) {
+    throw new Error(`Falha ao clicar no botao de download (${String(actionLabel || '').trim() || 'sem-rotulo'}): ${error.message}`);
+  }
 
   const winner = await Promise.race([downloadPromise, popupPromise]);
 
@@ -304,7 +335,11 @@ async function clickAndSaveDownload(page, clickableLocator, downloadDir) {
     download = await popup.waitForEvent('download', { timeout: 45000 }).catch(() => null);
     await popup.close().catch(() => {});
   } else {
-    return null;
+    throw new Error(`Nenhum download nem popup ocorreu apos clicar (${String(actionLabel || '').trim() || 'sem-rotulo'})`);
+  }
+
+  if (!download) {
+    throw new Error(`Popup abriu, mas nenhum download foi disparado (${String(actionLabel || '').trim() || 'sem-rotulo'})`);
   }
 
   const suggested = download.suggestedFilename();
@@ -314,7 +349,9 @@ async function clickAndSaveDownload(page, clickableLocator, downloadDir) {
     await download.delete().catch(() => {});
     return null;
   }
+  setStage('download.save', suggested);
   await download.saveAs(target);
+  console.log(`   Download salvo: ${suggested}`);
   return target;
 }
 
@@ -414,6 +451,8 @@ async function reloginWithCredentials(page, credencial, senha, dataInicial, data
 }
 
 async function applyDateFilterIfNeeded(page, startStr, endStr) {
+  setStage('filter.start', `${startStr}..${endStr}`);
+  console.log(`   Aplicando filtro para ${startStr}..${endStr}`);
   // Abre o filtro pela mesma UI existente no portal (sem page.goto/refresh)
   const btnFiltro = page.locator(
     `xpath=//button[contains(@class,'btn') and (contains(.,'Filtro') or contains(.,'Filtrar'))] | //a[contains(@class,'btn') and (contains(.,'Filtro') or contains(.,'Filtrar'))] | //i[contains(@class,'fa-filter')]/ancestor::*[self::a or self::button][1] | //button[contains(@title,'Filtro') or contains(@aria-label,'Filtro')] | //a[contains(@title,'Filtro') or contains(@aria-label,'Filtro')]`
@@ -425,7 +464,12 @@ async function applyDateFilterIfNeeded(page, startStr, endStr) {
   // alguns layouts mostram os inputs só após abrir modal/painel de filtro
   const inputsVisiveis = await campoInicial.isVisible().catch(() => false);
   if (!inputsVisiveis) {
-    await btnFiltro.click({ timeout: 20000 }).catch(() => {});
+    try {
+      console.log('   Abrindo painel de filtro...');
+      await btnFiltro.click({ timeout: 20000 });
+    } catch (error) {
+      logWarn('filter.open', `Falha ao clicar no botao de filtro: ${error.message}`);
+    }
     await page.waitForTimeout(250);
   }
 
@@ -437,6 +481,7 @@ async function applyDateFilterIfNeeded(page, startStr, endStr) {
 
   if (String(atualIni).trim() === String(startStr).trim() && String(atualFim).trim() === String(endStr).trim()) {
     console.log('   ℹ️ Filtro já está aplicado, pulando reaplicação');
+    setStage('filter.done', `${startStr}..${endStr} | ja-aplicado`);
     return;
   }
 
@@ -451,15 +496,40 @@ async function applyDateFilterIfNeeded(page, startStr, endStr) {
     )
     .first();
 
-  const clicked = await btnFiltrar.click({ timeout: 60000 }).then(() => true).catch(() => false);
+  let clicked = false;
+  try {
+    console.log('   Clicando em Filtrar...');
+    await btnFiltrar.click({ timeout: 60000 });
+    clicked = true;
+  } catch (error) {
+    logWarn('filter.submit', `Clique no botao Filtrar falhou: ${error.message}`);
+  }
   if (!clicked) {
-    await campoFinal.press('Enter').catch(() => {});
+    try {
+      console.log('   Tentando aplicar filtro via Enter...');
+      await campoFinal.press('Enter');
+    } catch (error) {
+      logWarn('filter.submit', `Fallback Enter falhou: ${error.message}`);
+    }
   }
 
   // preferir seletor de resultado (contador) a networkidle, porque a página pode fazer polling
   await page.waitForTimeout(400);
-  await page.locator(`xpath=//*[contains(.,'Total de') and contains(.,'registros')]`).first().waitFor({ timeout: 60000 }).catch(() => {});
+  try {
+    await page.locator(`xpath=//*[contains(.,'Total de') and contains(.,'registros')]`).first().waitFor({ timeout: 60000 });
+    console.log('   Filtro aplicado com total de registros confirmado.');
+  } catch (error) {
+    const bodyText = (await page.locator('body').innerText().catch(() => '')).toLowerCase();
+    const semResultados = ['nenhum registro', 'nenhum resultado', 'nÃ£o hÃ¡ dados', 'sem resultados', 'nenhuma nota']
+      .some((msg) => bodyText.includes(msg));
+    if (semResultados) {
+      console.log('   Filtro aplicado com 0 resultados.');
+    } else {
+      throw new Error(`Filtro aplicado, mas o total de registros nao pode ser confirmado: ${error.message}`);
+    }
+  }
   await page.waitForTimeout(800);
+  setStage('filter.done', `${startStr}..${endStr}`);
 }
 
 async function fillAndFilter(page, dataInicial, dataFinal) {
@@ -570,8 +640,9 @@ async function getTotalRegistros(page) {
       return parseInt(mTotal[1], 10);
     }
   } catch (e) {
-    // Ignora erros
+    logWarn('records.total', `Falha ao ler total de registros: ${e.message}`);
   }
+  logWarn('records.total', 'Total de registros nao pode ser confirmado');
   return null;
 }
 
@@ -646,6 +717,8 @@ async function maybePauseAfterDownloads() {
 
 
 async function processPeriodInBrowser(page, dataInicial, dataFinal, loginType, cert, credencial, pass, reloginCallback, opts = {}) {
+  setStage('period.start', `${dataInicial}..${dataFinal}`);
+  console.log(`   Iniciando processamento do periodo ${dataInicial}..${dataFinal}`);
   let totalXml = 0;
   let totalPdf = 0;
 
@@ -658,7 +731,11 @@ async function processPeriodInBrowser(page, dataInicial, dataFinal, loginType, c
   console.log(`   📊 Total de registros: ${totalRegistros}`);
   updateActivity();
 
-  if (totalRegistros !== null && totalRegistros === 0) {
+  if (totalRegistros === null) {
+    throw new Error(`Nao foi possivel confirmar o total de registros para ${dataInicial}..${dataFinal}`);
+  }
+
+  if (totalRegistros === 0) {
     console.log(`   ℹ️ 0 notas no período.`);
     return { xml: 0, pdf: 0, needToSplit: false };
   }
@@ -687,6 +764,7 @@ async function processPeriodInBrowser(page, dataInicial, dataFinal, loginType, c
   let reloginAttempts = 0;
 
   for (let pagina = 1; pagina <= totalPages; pagina++) {
+    setStage('page.start', `${pagina}/${totalPages}`);
     if (await isSessionExpired(page)) {
       console.log('   ⚠️ Sessão expirada!');
 
@@ -750,18 +828,32 @@ async function processPeriodInBrowser(page, dataInicial, dataFinal, loginType, c
       }
 
       const nextA = nextLi.locator('xpath=.//a').first();
+      const pageSignatureBefore = await page.locator('body').innerText().catch(() => '');
       await nextA.scrollIntoViewIfNeeded().catch(() => {});
       
       // Pausa humana aleatória antes de clicar na próxima página
       await randomHumanPause(DOWNLOAD_PATTERN.PAGE_PAUSE_MIN, DOWNLOAD_PATTERN.PAGE_PAUSE_MAX);
       
-      await nextA.click({ timeout: 60000 }).catch(() => {});
+      try {
+        setStage('page.next', `${pagina}->${pagina + 1}`);
+        console.log(`   Tentando avancar da pagina ${pagina} para ${pagina + 1}...`);
+        await nextA.click({ timeout: 60000 });
+      } catch (error) {
+        throw new Error(`Falha ao clicar na proxima pagina (${pagina} -> ${pagina + 1}): ${error.message}`);
+      }
       await safeWaitNetworkIdle(page, 60000);
       await page.waitForTimeout(1200);
+      const pageSignatureAfter = await page.locator('body').innerText().catch(() => '');
+      if (pageSignatureBefore === pageSignatureAfter) {
+        throw new Error(`Clique na proxima pagina nao alterou o conteudo visivel (${pagina} -> ${pagina + 1})`);
+      }
+      console.log(`   Avanco confirmado para pagina ${pagina + 1}.`);
       updateActivity();
     }
   }
 
+  setStage('period.done', `${dataInicial}..${dataFinal} | XML=${totalXml} PDF=${totalPdf}`);
+  console.log(`   Fim do processamento do periodo ${dataInicial}..${dataFinal}`);
   return { xml: totalXml, pdf: totalPdf, needToSplit: false };
 }
 
@@ -806,6 +898,7 @@ async function loginAndDownload({
   let page = null;
 
   try {
+    setStage('browser.launch', cert.alias);
     browser = await chromium.launch({
       headless: String(headless).toLowerCase() === 'true',
       slowMo: 0,
@@ -857,6 +950,7 @@ async function loginAndDownload({
 
     // Login
     if (loginType === 'certificado') {
+      setStage('login.cert.start', cert.alias);
       console.log('   🔐 Fazendo login com certificado digital...');
       
       await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
@@ -886,6 +980,7 @@ async function loginAndDownload({
         notasLink.click({ timeout: 60000 }),
       ]);
     } else {
+      setStage('login.credentials.start', credencial.cpf_cnpj);
       await loginWithCredentials(page, credencial.cpf_cnpj, pass);
       
       const notasLink = page.locator(`a[href="${NOTAS_URL}"]`).first();
@@ -900,6 +995,7 @@ async function loginAndDownload({
     updateActivity();
 
     // Processa o período (com divisão automática se > 800 registros)
+    setStage('period.dispatch', `${dataInicial}..${dataFinal}`);
     const result = await processPeriodInBrowser(
       page, 
       dataInicial, 
@@ -923,6 +1019,7 @@ async function loginAndDownload({
       needToSplit: false 
     };
   } catch (error) {
+    console.log(`[STAGE] failure | ${currentStage}`);
     console.log(`   ❌ Erro no download: ${error.message}`);
     
     // Detectar erros de rede específicos
@@ -945,6 +1042,7 @@ async function loginAndDownload({
 }
 
 async function downloadPageItems(page, downloadDir, pagina) {
+  setStage('items.start', `pagina=${pagina}`);
   let xmlCount = 0;
   let pdfCount = 0;
 
@@ -961,6 +1059,9 @@ async function downloadPageItems(page, downloadDir, pagina) {
   console.log(`   📥 Página ${pagina}: ${count} itens`);
 
   for (let i = 0; i < count; i++) {
+    const itemLabel = `${pagina}.${i + 1}`;
+    setStage('item.start', itemLabel);
+    console.log(`   Iniciando item ${itemLabel}...`);
     if (await isSessionExpired(page)) {
       console.log('   ⚠️ Sessão expirada durante download!');
       break;
@@ -980,7 +1081,7 @@ async function downloadPageItems(page, downloadDir, pagina) {
       const linkXml = scope.locator(
         `xpath=.//a[contains(., 'Download XML') or contains(., 'download XML') or (contains(., 'XML') and not(contains(., 'DANFS')))]`
       );
-      const savedXml = await clickAndSaveDownload(page, linkXml, downloadDir).catch(() => null);
+      const savedXml = await clickAndSaveDownload(page, linkXml, downloadDir);
       if (savedXml) { xmlCount += 1; totalDownloadsDone += 1; await maybePauseAfterDownloads(); }
 
       await page.waitForTimeout(150);
@@ -999,10 +1100,15 @@ async function downloadPageItems(page, downloadDir, pagina) {
       const linkPdf = scope.locator(
         `xpath=.//a[contains(., 'Download DANFS-e') or contains(., 'DANFS-e') or contains(., 'DANFSe') or contains(., 'PDF')]`
       );
-      const savedPdf = await clickAndSaveDownload(page, linkPdf, downloadDir).catch(() => null);
+      const savedPdf = await clickAndSaveDownload(page, linkPdf, downloadDir);
       if (savedPdf) { pdfCount += 1; totalDownloadsDone += 1; await maybePauseAfterDownloads(); }
-    } catch (_) {
-      // ignora erros por item
+      if (!savedXml && !savedPdf) {
+        logItemResult(itemLabel, 'nenhum download efetuado');
+      } else {
+        logItemResult(itemLabel, `XML=${savedXml ? 'ok' : 'nao'} | PDF=${savedPdf ? 'ok' : 'nao'}`);
+      }
+    } catch (error) {
+      logItemResult(itemLabel, `falha: ${error.message}`);
     } finally {
       await page.keyboard.press('Escape').catch(() => {});
       await page.waitForTimeout(150);
