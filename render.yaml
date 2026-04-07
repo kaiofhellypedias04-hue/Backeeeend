@@ -41,4 +41,4 @@ services:
       - key: ENABLE_KEYRING_FALLBACK
         value: "false"
       - key: PLAYWRIGHT_TIMEOUT_MS
-        value: "300000"
+        value: "1200000"

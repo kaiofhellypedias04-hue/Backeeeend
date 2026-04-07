@@ -199,6 +199,19 @@ def _run_node_download(
     settings = get_settings()
     env = os.environ.copy()
 
+    logger.info(
+        "Executando subprocesso Playwright com timeout efetivo de %s ms (origem=%s, env=%s)",
+        settings.playwright_timeout_ms,
+        settings.playwright_timeout_source,
+        settings.playwright_timeout_env_raw if settings.playwright_timeout_env_raw is not None else "<ausente>",
+    )
+    print(
+        "[playwright] timeout subprocesso = "
+        f"{settings.playwright_timeout_ms} ms | origem = {settings.playwright_timeout_source} "
+        f"| env PLAYWRIGHT_TIMEOUT_MS = "
+        f"{settings.playwright_timeout_env_raw if settings.playwright_timeout_env_raw is not None else '<ausente>'}"
+    )
+
     node_opts = env.get("NODE_OPTIONS", "")
     if "--openssl-legacy-provider" not in node_opts:
         env["NODE_OPTIONS"] = (node_opts + " " if node_opts else "") + "--openssl-legacy-provider"

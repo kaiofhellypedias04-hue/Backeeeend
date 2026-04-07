@@ -41,6 +41,22 @@ def _parse_csv(value: str | None) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+DEFAULT_PLAYWRIGHT_TIMEOUT_MS = 1200000
+LEGACY_PLAYWRIGHT_TIMEOUT_MS = 300000
+
+
+def _resolve_playwright_timeout() -> tuple[int, str, str | None]:
+    raw = os.getenv("PLAYWRIGHT_TIMEOUT_MS")
+    if raw is None or not raw.strip():
+        return DEFAULT_PLAYWRIGHT_TIMEOUT_MS, "default", None
+
+    normalized = raw.strip()
+    parsed = int(normalized)
+    if parsed == LEGACY_PLAYWRIGHT_TIMEOUT_MS:
+        return DEFAULT_PLAYWRIGHT_TIMEOUT_MS, "env_legacy_300000_overridden", normalized
+    return parsed, "env", normalized
+
+
 def _is_server_env(app_env: str) -> bool:
     return app_env == "production" or _env_bool("RENDER", default=False)
 
@@ -86,6 +102,8 @@ class AppSettings:
     node_bin: str
     npm_bin: str
     playwright_timeout_ms: int
+    playwright_timeout_source: str
+    playwright_timeout_env_raw: str | None
     cors_origins: list[str]
     enable_keyring_fallback: bool
     database_url: str | None
@@ -194,6 +212,7 @@ class AppSettings:
 @lru_cache(maxsize=1)
 def get_settings() -> AppSettings:
     app_env = os.getenv("APP_ENV", "development").strip().lower() or "development"
+    playwright_timeout_ms, playwright_timeout_source, playwright_timeout_env_raw = _resolve_playwright_timeout()
     default_app_data_dir = Path(os.getenv("APP_DATA_DIR", "/data/backend"))
     app_data_dir = _resolve_path(os.getenv("APP_DATA_DIR"), default_app_data_dir)
     output_dir = app_data_dir / "saida"
@@ -227,7 +246,9 @@ def get_settings() -> AppSettings:
         package_json_path=_resolve_path(os.getenv("PACKAGE_JSON_PATH"), PROJECT_ROOT / "package.json"),
         node_bin=os.getenv("NODE_BIN", "node"),
         npm_bin=os.getenv("NPM_BIN", "npm"),
-        playwright_timeout_ms=int(os.getenv("PLAYWRIGHT_TIMEOUT_MS", "1200000")),
+        playwright_timeout_ms=playwright_timeout_ms,
+        playwright_timeout_source=playwright_timeout_source,
+        playwright_timeout_env_raw=playwright_timeout_env_raw,
         cors_origins=cors_origins,
         enable_keyring_fallback=_env_bool("ENABLE_KEYRING_FALLBACK", default=app_env != "production"),
         database_url=os.getenv("DATABASE_URL"),
@@ -247,6 +268,16 @@ def get_settings() -> AppSettings:
     settings.ensure_runtime_dirs()
     print(f"[settings] APP_DATA_DIR = {settings.app_data_dir}")
     print(f"[settings] CERTS_DIR = {settings.certs_dir}")
+    if settings.playwright_timeout_env_raw is not None:
+        print(
+            f"[settings] PLAYWRIGHT_TIMEOUT_MS(env) = {settings.playwright_timeout_env_raw} "
+            f"| efetivo = {settings.playwright_timeout_ms} | origem = {settings.playwright_timeout_source}"
+        )
+    else:
+        print(
+            f"[settings] PLAYWRIGHT_TIMEOUT_MS(env) = <ausente> "
+            f"| efetivo = {settings.playwright_timeout_ms} | origem = {settings.playwright_timeout_source}"
+        )
     settings.validate_runtime_paths_for_production(raise_on_tmp=False)
     return settings
 
