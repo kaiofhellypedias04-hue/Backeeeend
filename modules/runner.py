@@ -1,24 +1,24 @@
 from __future__ import annotations
 
-import os
-import time
-import random
-import uuid
 import glob
+import os
+import random
+import time
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from .downloader import criar_estrutura_pastas, distribuir_por_competencia
 from .nfse_xml_converter import NFSeXMLConverterComAPI
-from .playwright_downloader import executar_fluxo_nfse_playwright
-from .downloader import distribuir_por_competencia, criar_estrutura_pastas
-from .spreadsheet import atualizar_planilha_incremental
 from .notas_repo import (
-    salvar_nota_nfse,
-    gerar_chave_nfse,
     garantir_schema_nfse_notas,
+    gerar_chave_nfse,
+    salvar_nota_nfse,
 )
-from .run_state_repo import upsert_state, garantir_schema_run_state
+from .playwright_downloader import executar_fluxo_nfse_playwright
+from .run_state_repo import garantir_schema_run_state, upsert_state
+from .spreadsheet import atualizar_planilha_incremental
 
 
 @dataclass
@@ -30,7 +30,7 @@ class RunConfig:
     start: date | None = None
     end: date | None = None
     headless: bool = False
-    chunk_days: int = 15  # (legacy) Chunking no Python está desativado; split >800 ocorre no Node na mesma sessão
+    chunk_days: int = 15  # Chunk manual por data no Python; split >800 continua no Node
     consultar_api: bool = True
     login_type: str = "certificado"  # 'certificado' ou 'cpf_cnpj'
     credentials_json_path: str = ""  # Caminho para credentials.json
@@ -49,25 +49,32 @@ def _chunk_ranges(start: date, end: date, chunk_days: int):
         cur = chunk_end + timedelta(days=1)
 
 
-def _resolver_intervalo_automatico(cfg: RunConfig, cert_alias: str) -> tuple[date, date]:
-    """Resolve o intervalo automático para processamento.
+def _normalize_chunk_days(value: Any) -> int | None:
+    try:
+        chunk_days = int(value)
+    except (TypeError, ValueError):
+        return None
+    return chunk_days if chunk_days > 0 else None
 
-    Requisito 4: Sempre processar os ÚLTIMOS 30 DIAS.
-    As datas já devem estar configuradas em cfg.start e cfg.end pelo main.py.
-    Esta função apenas valida e retorna os valores.
-    """
+
+def _resolve_processing_chunks(start: date, end: date, chunk_days: Any) -> list[tuple[date, date]]:
+    normalized_chunk_days = _normalize_chunk_days(chunk_days)
+    if normalized_chunk_days is None:
+        return [(start, end)]
+    return list(_chunk_ranges(start, end, normalized_chunk_days))
+
+
+def _resolver_intervalo_automatico(cfg: RunConfig, cert_alias: str) -> tuple[date, date]:
+    """Resolve o intervalo automatico para processamento."""
     hoje = date.today()
 
-    # Se cfg.start e cfg.end já estão definidos (últimos 30 dias), usar esses valores
     if cfg.start is not None and cfg.end is not None:
         start = cfg.start
         end = cfg.end
     else:
-        # Fallback: calcular últimos 30 dias se não definido
         end = hoje
         start = hoje - timedelta(days=29)
 
-    # Validação: não processar datas futuras
     if end > hoje:
         end = hoje
     if start > end:
@@ -77,17 +84,11 @@ def _resolver_intervalo_automatico(cfg: RunConfig, cert_alias: str) -> tuple[dat
 
 
 def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
-    """Orquestra execução manual (GUI) e automática (CLI) sem depender de Tkinter.
-
-    Retorna uma lista de resultados por certificado. O retorno é compatível com
-    chamadas legadas que ignoram o valor de retorno.
-
-    Args:
-        logger: Optional StructuredLogger for structured logging.
-    """
+    """Orquestra execucao manual (GUI) e automatica (CLI) sem depender de Tkinter."""
     if logger is None:
         from worker.logging import StructuredLogger
-        logger = StructuredLogger('WARNING')  # Minimal fallback
+
+        logger = StructuredLogger("WARNING")
 
     os.makedirs(cfg.base_dir, exist_ok=True)
     garantir_schema_run_state()
@@ -97,74 +98,81 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
     resultados_execucao: list[dict[str, Any]] = []
 
     for i_cert, cert_alias in enumerate(cfg.cert_aliases, start=1):
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"{'CREDENCIAL' if cfg.login_type == 'cpf_cnpj' else 'CERTIFICADO'}: {cert_alias}")
-        print("="*60)
+        print("=" * 60)
 
         base_dir_cert = os.path.join(cfg.base_dir, cert_alias)
         os.makedirs(base_dir_cert, exist_ok=True)
 
-        if cfg.modo == 'automatico':
+        if cfg.modo == "automatico":
             start, end = _resolver_intervalo_automatico(cfg, cert_alias)
         else:
             if not cfg.start or not cfg.end:
                 raise ValueError("Modo manual requer start e end")
             start, end = cfg.start, cfg.end
 
-        upsert_state(cert_alias, status='running', last_error=None)
+        chunk_days_valid = _normalize_chunk_days(getattr(cfg, "chunk_days", None))
+        chunks = _resolve_processing_chunks(start, end, getattr(cfg, "chunk_days", None))
+
+        print(f"\nPeriodo total solicitado: {start.isoformat()} -> {end.isoformat()}")
+        print(
+            "Chunk days recebido: "
+            f"{getattr(cfg, 'chunk_days', None)} | "
+            f"{'chunk manual ativo' if chunk_days_valid is not None else 'chunk manual desativado'}"
+        )
+        print(f"Quantidade de chunks gerados: {len(chunks)}")
+        for idx_chunk, (chunk_start, chunk_end) in enumerate(chunks, start=1):
+            print(f"  Chunk {idx_chunk}/{len(chunks)}: {chunk_start.isoformat()} -> {chunk_end.isoformat()}")
+
+        upsert_state(cert_alias, status="running", last_error=None)
         last_ok_date: date | None = None
 
         def _process_tmp_dir(tmp_dir: str, base_dir_cert: str, periodo_start: date, periodo_end: date) -> dict[str, Any]:
-            """Move XMLs para estrutura final, processa, persiste e atualiza planilha.
-
-            Retorna métricas e caminhos desta execução para permitir validação e
-            registro consistente de arquivos no processo.
-            """
             moved = distribuir_por_competencia(tmp_dir, base_dir_cert)
-            xml_paths = list(moved.get('xml') or [])
-            pdf_paths = list(moved.get('pdf') or [])
+            xml_paths = list(moved.get("xml") or [])
+            pdf_paths = list(moved.get("pdf") or [])
 
             resultado: dict[str, Any] = {
-                'cert_alias': cert_alias,
-                'periodo_start': periodo_start,
-                'periodo_end': periodo_end,
-                'xml_paths': xml_paths,
-                'pdf_paths': pdf_paths,
-                'planilha_paths': [],
-                'xml_movidos': len(xml_paths),
-                'pdf_movidos': len(pdf_paths),
-                'dados_extraidos': 0,
-                'notas_salvas': 0,
-                'erros_salvamento': [],
-                'status': 'sem_xml',
+                "cert_alias": cert_alias,
+                "periodo_start": periodo_start,
+                "periodo_end": periodo_end,
+                "xml_paths": xml_paths,
+                "pdf_paths": pdf_paths,
+                "planilha_paths": [],
+                "xml_movidos": len(xml_paths),
+                "pdf_movidos": len(pdf_paths),
+                "dados_extraidos": 0,
+                "notas_salvas": 0,
+                "erros_salvamento": [],
+                "status": "sem_xml",
             }
 
             if not xml_paths:
                 logger.info("Nenhum XML novo para processar neste chunk.")
                 return resultado
 
-            logger.info("Processando XMLs", {'count': len(xml_paths)})
+            logger.info("Processando XMLs", {"count": len(xml_paths)})
             dados = converter.process_multiple_files(xml_paths)
-            resultado['dados_extraidos'] = len(dados or [])
+            resultado["dados_extraidos"] = len(dados or [])
 
             if not dados:
-                logger.warning("Nenhum dado extraído dos XMLs movidos.")
-                resultado['status'] = 'sem_dados'
+                logger.warning("Nenhum dado extraido dos XMLs movidos.")
+                resultado["status"] = "sem_dados"
                 return resultado
 
             dados = converter.consultar_cnpjs_em_lote(dados)
-            resultado['dados_extraidos'] = len(dados or [])
+            resultado["dados_extraidos"] = len(dados or [])
 
             notas_salvas = 0
             erros_salvamento: list[str] = []
 
-            # Persistir no banco (dedupe por cert_alias+chave_nfse)
             for d in dados:
                 try:
-                    arquivo_origem = d.get('_arquivo_origem') or d.get('_Arquivo_Origem')
+                    arquivo_origem = d.get("_arquivo_origem") or d.get("_Arquivo_Origem")
                     salvar_nota_nfse(
                         cert_alias,
-                        getattr(cfg, 'processo_id', None),
+                        getattr(cfg, "processo_id", None),
                         d,
                         arquivo_origem=arquivo_origem,
                     )
@@ -178,28 +186,24 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                     erros_salvamento.append(erro_txt)
                     logger.warning(f"Erro salvando nota | {erro_txt}")
 
-            resultado['notas_salvas'] = notas_salvas
-            resultado['erros_salvamento'] = erros_salvamento
+            resultado["notas_salvas"] = notas_salvas
+            resultado["erros_salvamento"] = erros_salvamento
 
-            # Falha explícita: havia XML processável, mas nenhuma nota foi persistida.
             if xml_paths and notas_salvas == 0:
-                resultado['status'] = 'falha_sem_notas'
+                resultado["status"] = "falha_sem_notas"
                 return resultado
 
-            # Planilha do período (incremental, 1 arquivo por execução/período)
             estrutura = criar_estrutura_pastas(
                 base_dir_cert,
                 data_referencia=datetime(periodo_end.year, periodo_end.month, 1),
             )
-            planilhas_dir = estrutura['planilhas_dir']
-
-            # Verifica se já existe alguma planilha na pasta para usar como base
+            planilhas_dir = estrutura["planilhas_dir"]
             planilhas_existentes = glob.glob(os.path.join(planilhas_dir, "auditoria_nfse*.xlsx"))
 
             if planilhas_existentes:
                 caminho_planilha = planilhas_existentes[0]
                 nome_periodo = os.path.basename(caminho_planilha).replace("auditoria_nfse_", "").replace(".xlsx", "")
-                logger.info("Planilha existente encontrada", {'planilha': os.path.basename(caminho_planilha)})
+                logger.info("Planilha existente encontrada", {"planilha": os.path.basename(caminho_planilha)})
             else:
                 nome_periodo = f"{periodo_start.isoformat()}_a_{periodo_end.isoformat()}"
                 planilha_nome = f"auditoria_nfse_{cert_alias}_{nome_periodo}.xlsx"
@@ -214,87 +218,152 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
             logger.info(
                 "Planilha atualizada",
                 {
-                    'periodo': nome_periodo,
-                    'existentes': existentes,
-                    'adicionados': adicionados,
-                    'planilha': os.path.basename(caminho_planilha),
+                    "periodo": nome_periodo,
+                    "existentes": existentes,
+                    "adicionados": adicionados,
+                    "planilha": os.path.basename(caminho_planilha),
                 },
             )
 
-            resultado['planilha_paths'] = [caminho_planilha] if os.path.exists(caminho_planilha) else []
-            resultado['status'] = 'ok'
+            resultado["planilha_paths"] = [caminho_planilha] if os.path.exists(caminho_planilha) else []
+            resultado["status"] = "ok"
 
             nonlocal last_ok_date
             last_ok_date = periodo_end
             return resultado
 
         resultado_cert: dict[str, Any] = {
-            'cert_alias': cert_alias,
-            'start': start,
-            'end': end,
-            'tmp_dir': None,
-            'download_ok': False,
-            'total_xmls_baixados': 0,
-            'processamento': None,
-            'status': 'pending',
+            "cert_alias": cert_alias,
+            "start": start,
+            "end": end,
+            "tmp_dir": None,
+            "download_ok": False,
+            "total_xmls_baixados": 0,
+            "processamento": None,
+            "chunks": [],
+            "status": "pending",
         }
 
         try:
-            print(f"\n📅 Período solicitado: {start.isoformat()} → {end.isoformat()}")
-            run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
-            tmp_dir = os.path.join(base_dir_cert, "tmp_downloads", run_id)
-            os.makedirs(tmp_dir, exist_ok=True)
-            resultado_cert['tmp_dir'] = tmp_dir
+            processamentos_chunks: list[dict[str, Any]] = []
+            total_xmls_baixados = 0
+            houve_split_interno = False
+            total_xml_movidos = 0
+            total_pdf_movidos = 0
+            total_dados_extraidos = 0
+            total_notas_salvas = 0
+            planilha_paths: list[str] = []
+            erros_salvamento: list[str] = []
 
-            ok, total_xmls, need_to_split, error_msg = executar_fluxo_nfse_playwright(
-                cert_alias=cert_alias,
-                data_inicial=_date_to_br(start),
-                data_final=_date_to_br(end),
-                diretorio_base=base_dir_cert,
-                certs_json_path=cfg.certs_json_path,
-                credentials_json_path=cfg.credentials_json_path,
-                login_type=cfg.login_type,
-                headless=cfg.headless,
-                download_dir=tmp_dir,
-                tipo_nota=cfg.tipo_nota,
-            )
-            if not ok:
-                detail = f": {error_msg}" if error_msg else ""
-                raise RuntimeError(f"Falha no download Playwright para {cert_alias} ({start}..{end}){detail}")
+            for idx_chunk, (chunk_start, chunk_end) in enumerate(chunks, start=1):
+                print(
+                    f"\n[chunk {idx_chunk}/{len(chunks)}] Inicio: "
+                    f"{chunk_start.isoformat()} -> {chunk_end.isoformat()}"
+                )
+                chunk_started_at = time.perf_counter()
+                run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
+                tmp_dir = os.path.join(base_dir_cert, "tmp_downloads", f"{run_id}_chunk_{idx_chunk:03d}")
+                os.makedirs(tmp_dir, exist_ok=True)
+                resultado_cert["tmp_dir"] = tmp_dir
 
-            resultado_cert['download_ok'] = True
-            resultado_cert['total_xmls_baixados'] = total_xmls or 0
-            resultado_cert['need_to_split'] = need_to_split
+                ok, total_xmls, need_to_split, error_msg = executar_fluxo_nfse_playwright(
+                    cert_alias=cert_alias,
+                    data_inicial=_date_to_br(chunk_start),
+                    data_final=_date_to_br(chunk_end),
+                    diretorio_base=base_dir_cert,
+                    certs_json_path=cfg.certs_json_path,
+                    credentials_json_path=cfg.credentials_json_path,
+                    login_type=cfg.login_type,
+                    headless=cfg.headless,
+                    download_dir=tmp_dir,
+                    tipo_nota=cfg.tipo_nota,
+                )
+                if not ok:
+                    detail = f": {error_msg}" if error_msg else ""
+                    raise RuntimeError(
+                        f"Falha no download Playwright para {cert_alias} "
+                        f"(chunk {idx_chunk}/{len(chunks)} - {chunk_start}..{chunk_end}){detail}"
+                    )
 
-            processamento = _process_tmp_dir(tmp_dir, base_dir_cert, start, end)
-            resultado_cert['processamento'] = processamento
+                processamento = _process_tmp_dir(tmp_dir, base_dir_cert, chunk_start, chunk_end)
 
-            # Validações de integridade: não permitir sucesso falso.
-            if (resultado_cert['total_xmls_baixados'] or 0) > 0 and processamento['xml_movidos'] == 0:
-                raise RuntimeError(
-                    f"Foram baixados {resultado_cert['total_xmls_baixados']} XML(s), mas nenhum XML novo foi distribuído/processado."
+                if (total_xmls or 0) > 0 and processamento["xml_movidos"] == 0:
+                    raise RuntimeError(
+                        f"Chunk {idx_chunk}/{len(chunks)} baixou {total_xmls} XML(s), "
+                        "mas nenhum XML novo foi distribuido/processado."
+                    )
+
+                if processamento["xml_movidos"] > 0 and processamento["dados_extraidos"] == 0:
+                    raise RuntimeError(
+                        f"Chunk {idx_chunk}/{len(chunks)} moveu {processamento['xml_movidos']} XML(s), "
+                        "mas nenhum dado foi extraido."
+                    )
+
+                if processamento["xml_movidos"] > 0 and processamento["notas_salvas"] == 0:
+                    raise RuntimeError(
+                        f"Chunk {idx_chunk}/{len(chunks)} moveu {processamento['xml_movidos']} XML(s), "
+                        "mas nenhuma nota foi persistida."
+                    )
+
+                chunk_elapsed_s = time.perf_counter() - chunk_started_at
+                print(
+                    f"[chunk {idx_chunk}/{len(chunks)}] Fim: "
+                    f"{chunk_start.isoformat()} -> {chunk_end.isoformat()} "
+                    f"| tempo={chunk_elapsed_s:.1f}s | xml_baixados={int(total_xmls or 0)}"
                 )
 
-            if processamento['xml_movidos'] > 0 and processamento['dados_extraidos'] == 0:
-                raise RuntimeError(
-                    f"{processamento['xml_movidos']} XML(s) foram movidos, mas nenhum dado foi extraído."
-                )
+                chunk_result = {
+                    "index": idx_chunk,
+                    "start": chunk_start,
+                    "end": chunk_end,
+                    "tmp_dir": tmp_dir,
+                    "download_ok": True,
+                    "total_xmls_baixados": int(total_xmls or 0),
+                    "need_to_split": bool(need_to_split),
+                    "processamento": processamento,
+                    "elapsed_seconds": round(chunk_elapsed_s, 3),
+                    "status": "ok",
+                }
+                processamentos_chunks.append(chunk_result)
 
-            if processamento['xml_movidos'] > 0 and processamento['notas_salvas'] == 0:
-                raise RuntimeError(
-                    f"{processamento['xml_movidos']} XML(s) foram movidos, mas nenhuma nota foi persistida."
-                )
+                total_xmls_baixados += int(total_xmls or 0)
+                houve_split_interno = houve_split_interno or bool(need_to_split)
+                total_xml_movidos += int(processamento["xml_movidos"] or 0)
+                total_pdf_movidos += int(processamento["pdf_movidos"] or 0)
+                total_dados_extraidos += int(processamento["dados_extraidos"] or 0)
+                total_notas_salvas += int(processamento["notas_salvas"] or 0)
+                planilha_paths.extend(processamento.get("planilha_paths") or [])
+                erros_salvamento.extend(processamento.get("erros_salvamento") or [])
 
-            upsert_state(cert_alias, last_processed_date=last_ok_date or end, status='ok', last_error=None)
-            resultado_cert['status'] = 'ok'
+            resultado_cert["download_ok"] = True
+            resultado_cert["total_xmls_baixados"] = total_xmls_baixados
+            resultado_cert["need_to_split"] = houve_split_interno
+            resultado_cert["chunks"] = processamentos_chunks
+            resultado_cert["processamento"] = {
+                "cert_alias": cert_alias,
+                "periodo_start": start,
+                "periodo_end": end,
+                "chunk_days": chunk_days_valid,
+                "total_chunks": len(chunks),
+                "xml_movidos": total_xml_movidos,
+                "pdf_movidos": total_pdf_movidos,
+                "dados_extraidos": total_dados_extraidos,
+                "notas_salvas": total_notas_salvas,
+                "planilha_paths": list(dict.fromkeys(planilha_paths)),
+                "erros_salvamento": erros_salvamento,
+                "status": "ok",
+            }
+
+            upsert_state(cert_alias, last_processed_date=last_ok_date or end, status="ok", last_error=None)
+            resultado_cert["status"] = "ok"
 
         except Exception as e:
-            print(f"❌ Erro no processamento para {cert_alias}: {e}")
-            upsert_state(cert_alias, status='error', last_error=str(e))
-            resultado_cert['status'] = 'error'
-            resultado_cert['error'] = str(e)
+            print(f"Erro no processamento para {cert_alias}: {e}")
+            upsert_state(cert_alias, status="error", last_error=str(e))
+            resultado_cert["status"] = "error"
+            resultado_cert["error"] = str(e)
             resultados_execucao.append(resultado_cert)
-            if getattr(cfg, 'processo_id', None):
+            if getattr(cfg, "processo_id", None):
                 raise
 
         else:
@@ -314,7 +383,7 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                     else:
                         sleep_s = random.uniform(480, 540)
 
-                    print(f"⏸ Espera pós-certificado {n}: {int(sleep_s)}s")
+                    print(f"Espera pos-certificado {n}: {int(sleep_s)}s")
                     time.sleep(sleep_s)
             except Exception:
                 pass
