@@ -227,7 +227,7 @@ def get_settings() -> AppSettings:
         package_json_path=_resolve_path(os.getenv("PACKAGE_JSON_PATH"), PROJECT_ROOT / "package.json"),
         node_bin=os.getenv("NODE_BIN", "node"),
         npm_bin=os.getenv("NPM_BIN", "npm"),
-        playwright_timeout_ms=int(os.getenv("PLAYWRIGHT_TIMEOUT_MS", "300000")),
+        playwright_timeout_ms=int(os.getenv("PLAYWRIGHT_TIMEOUT_MS", "1200000")),
         cors_origins=cors_origins,
         enable_keyring_fallback=_env_bool("ENABLE_KEYRING_FALLBACK", default=app_env != "production"),
         database_url=os.getenv("DATABASE_URL"),

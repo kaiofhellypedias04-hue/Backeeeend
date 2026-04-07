@@ -16,6 +16,9 @@ from .settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+EXTERNAL_RETRY_WAIT_SECONDS = (30, 60, 75, 90)
+MAX_EXTERNAL_ATTEMPTS = len(EXTERNAL_RETRY_WAIT_SECONDS) + 1
+
 
 def _normalize_output_text(value: Any) -> str:
     if value is None:
@@ -55,6 +58,56 @@ def _summarize_playwright_context(stdout: str, stderr: str) -> str:
     if tail:
         parts.append(f"ultimos logs: {tail}")
     return " | ".join(parts)
+
+
+def _fallback_retryable_error(error_msg: str) -> bool:
+    msg = str(error_msg or "").lower()
+    transient_markers = (
+        "playwright excedeu o timeout",
+        "erro executando subprocess",
+        "econnreset",
+        "connection reset",
+        "browser disconnected",
+        "target page, context or browser has been closed",
+        "net::err",
+        "timed out",
+        "timeout",
+    )
+    terminal_markers = (
+        "falha no login",
+        "máximo de tentativas de re-login atingido",
+        "maximo de tentativas de re-login atingido",
+        "erro de certificado",
+        "senha não configurada",
+        "senha nao configurada",
+        "credencial não encontrada",
+        "credencial nao encontrada",
+        "certificado não encontrado",
+        "certificado nao encontrado",
+        "playwright instalado sem browsers",
+        "browser do playwright nao encontrado",
+    )
+    if any(marker in msg for marker in terminal_markers):
+        return False
+    return any(marker in msg for marker in transient_markers)
+
+
+def _should_retry_externally(result: Dict[str, Any], error_msg: str, attempt: int) -> bool:
+    if attempt >= MAX_EXTERNAL_ATTEMPTS:
+        return False
+
+    if result.get("retryableExternally") is True:
+        return True
+    if result.get("retryableExternally") is False:
+        return False
+
+    error_category = str(result.get("errorCategory") or "").strip().lower()
+    if error_category in {"auth_terminal", "session_recovery_exhausted"}:
+        return False
+    if error_category in {"transient_process", "process_timeout"}:
+        return True
+
+    return _fallback_retryable_error(error_msg)
 
 
 def _preflight_playwright_runtime(settings) -> Optional[str]:
@@ -167,6 +220,8 @@ def _run_node_download(
                     "stdout": "",
                     "stderr": "",
                     "returncode": None,
+                    "errorCategory": "auth_terminal",
+                    "retryableExternally": False,
                 }
             env["PFX_PASS"] = pfx_pass
         else:
@@ -181,6 +236,8 @@ def _run_node_download(
                     "stdout": "",
                     "stderr": "",
                     "returncode": None,
+                    "errorCategory": "auth_terminal",
+                    "retryableExternally": False,
                 }
             env["LOGIN_PASS"] = portal_pass
 
@@ -223,6 +280,8 @@ def _run_node_download(
             "stdout": "",
             "stderr": "",
             "returncode": None,
+            "errorCategory": "runtime_terminal",
+            "retryableExternally": False,
         }
     except subprocess.TimeoutExpired as exc:
         stdout = _normalize_output_text(exc.stdout).strip()
@@ -240,6 +299,8 @@ def _run_node_download(
             "returncode": None,
             "last_stage": _extract_last_stage(stdout, stderr),
             "log_tail": _build_log_tail(stdout, stderr),
+            "errorCategory": "process_timeout",
+            "retryableExternally": True,
         }
     except Exception as e:
         return {
@@ -248,6 +309,8 @@ def _run_node_download(
             "stdout": "",
             "stderr": "",
             "returncode": None,
+            "errorCategory": "transient_process",
+            "retryableExternally": True,
         }
 
     stdout = (proc.stdout or "").strip()
@@ -260,6 +323,8 @@ def _run_node_download(
         "returncode": proc.returncode,
         "last_stage": _extract_last_stage(stdout, stderr),
         "log_tail": _build_log_tail(stdout, stderr),
+        "errorCategory": None,
+        "retryableExternally": None,
     }
 
     parsed: Optional[Dict[str, Any]] = None
@@ -292,6 +357,7 @@ def _run_node_download(
         return payload
 
     payload["error"] = stderr or stdout or f"Playwright retornou código {proc.returncode} sem saída parseável"
+    payload["retryableExternally"] = _fallback_retryable_error(payload["error"])
     return payload
 
 
@@ -338,7 +404,7 @@ def executar_fluxo_nfse_playwright(
     print(f"Tipo nota: {tipo_nota}")
     print(f"{'=' * 60}")
 
-    max_tentativas = 5
+    max_tentativas = MAX_EXTERNAL_ATTEMPTS
     result: Dict[str, Any] = {}
     login_desc = f"{login_type}:{cert_alias}"
 
@@ -385,6 +451,14 @@ def executar_fluxo_nfse_playwright(
                 error_msg = f"{error_msg} | ultima etapa: {last_stage}"
             if log_tail and "ultimos logs:" not in error_msg:
                 error_msg = f"{error_msg} | ultimos logs: {log_tail}"
+        error_category = str(result.get("errorCategory") or "unknown")
+        retryable_externally = _should_retry_externally(result, error_msg, tentativa)
+        print(
+            f"Playwright falhou para {login_desc}: {error_msg} "
+            f"| categoria={error_category} | retry_externo={'sim' if retryable_externally else 'nao'}"
+        )
+
+        retryable_externally = _should_retry_externally(result, error_msg, tentativa)
         msg_lower = str(error_msg).lower()
         if "please run the following command to download new browsers" in msg_lower:
             error_msg = (
@@ -405,9 +479,13 @@ def executar_fluxo_nfse_playwright(
             or "login/index" in msg_lower
             or ("certificado" in msg_lower and "login" in msg_lower)
         )
-        if eh_falha_login and tentativa < max_tentativas:
-            wait_time = min(10 + tentativa * 5, 30)
+        if retryable_externally and tentativa < max_tentativas:
+            wait_time = EXTERNAL_RETRY_WAIT_SECONDS[tentativa - 1]
             print(f"⏳ Aguardando {wait_time} segundos antes de tentar novamente...")
+            print(
+                f"Retry externo {tentativa}/{max_tentativas - 1}: "
+                f"aguardando {wait_time}s antes de reiniciar o subprocesso..."
+            )
             time.sleep(wait_time)
             continue
         return False, 0, False, str(error_msg)

@@ -14,10 +14,10 @@ const LOGIN_URL =
 let NOTAS_URL = '/EmissorNacional/Notas/Recebidas';  // padrão: tomados
 let NOTAS_URL_CHECK = '/notas/recebidas';  // para verificação em lower case
 
-const KEEP_ALIVE_INTERVAL_MS = 30000; // Reduzido de 45000 para 30 segundos
+const KEEP_ALIVE_INTERVAL_MS = 30000;
 const CHECKPOINT_FILE = 'download_checkpoint.json';
-const MAX_RELOGIN_ATTEMPTS = 3; // Aumentado de 1 para 3 tentativas
-const RELOGIN_INTERVAL_MS = 90000; // Reduzido de 120000 (2min) para 90 segundos
+const MAX_RELOGIN_ATTEMPTS = 3;
+const RELOGIN_INTERVAL_MS = 120000; // Politica preventiva: 2 minutos sem atividade relevante
 const SPLIT_THRESHOLD = 800; // Se mais de 800 notas, dividir período
 const SPLIT_DAYS = 15; // (legacy) mantido apenas para compatibilidade
 const MAX_SPLIT_DEPTH = 12; // Limite de recursão para split interno
@@ -195,6 +195,22 @@ async function isSessionExpired(page) {
 let keepAliveInterval = null;
 let reloginInterval = null;
 let lastActivityTime = Date.now();
+let reloginInProgress = false;
+let preventiveReloginTickRunning = false;
+let pageBusyCount = 0;
+
+function isPageBusy() {
+  return pageBusyCount > 0;
+}
+
+async function withPageBusy(label, fn) {
+  pageBusyCount += 1;
+  try {
+    return await fn();
+  } finally {
+    pageBusyCount = Math.max(0, pageBusyCount - 1);
+  }
+}
 
 function startKeepAlive(page) {
   if (keepAliveInterval) clearInterval(keepAliveInterval);
@@ -279,13 +295,25 @@ function startReloginTimer(page, reloginCallback) {
     clearInterval(reloginInterval);
   }
   reloginInterval = setInterval(async () => {
+    if (!page || page.isClosed()) return;
+    if (preventiveReloginTickRunning) {
+      console.log('   [relogin-timer] relogin preventivo ignorado: ja existe outro em andamento.');
+      return;
+    }
+    if (isPageBusy()) {
+      console.log('   [relogin-timer] relogin preventivo adiado: pagina ocupada.');
+      return;
+    }
     const timeSinceActivity = Date.now() - lastActivityTime;
     if (timeSinceActivity >= RELOGIN_INTERVAL_MS) {
       console.log(`   ⏰ 2 minutos sem atividade, fazendo re-login preventivo...`);
+      preventiveReloginTickRunning = true;
       try {
         await reloginCallback();
         lastActivityTime = Date.now();
+        preventiveReloginTickRunning = false;
       } catch (e) {
+        preventiveReloginTickRunning = false;
         console.log(`   ❌ Erro no re-login preventivo: ${e.message}`);
       }
     }
@@ -301,6 +329,75 @@ function stopReloginTimer() {
 
 function updateActivity() {
   lastActivityTime = Date.now();
+}
+
+async function sleepWithActivity(ms, reason = 'espera') {
+  updateActivity();
+  if (ms > 0) {
+    console.log(`   [activity] ${reason}: aguardando ${Math.round(ms / 1000)}s com sessao ativa.`);
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+  updateActivity();
+}
+
+async function executeRelogin(label, fn) {
+  if (reloginInProgress) {
+    throw new Error(`Relogin ja esta em andamento (${label})`);
+  }
+  reloginInProgress = true;
+  try {
+    return await withPageBusy(`relogin:${label}`, async () => {
+      updateActivity();
+      return await fn();
+    });
+  } finally {
+    updateActivity();
+    reloginInProgress = false;
+  }
+}
+
+function classifyError(message) {
+  const msg = String(message || '').toLowerCase();
+  if (!msg) {
+    return { errorCategory: 'unknown', retryableExternally: false };
+  }
+  if (
+    msg.includes('maximo de tentativas de re-login atingido')
+    || msg.includes('máximo de tentativas de re-login atingido')
+    || msg.includes('sessao expirada')
+    || msg.includes('sessão expirada')
+  ) {
+    return { errorCategory: 'session_recovery_exhausted', retryableExternally: false };
+  }
+  if (
+    msg.includes('falha no login')
+    || msg.includes('login nao confirmado')
+    || msg.includes('login não confirmado')
+    || msg.includes('re-login falhou')
+    || msg.includes('relogin falhou')
+    || msg.includes('erro de certificado')
+    || msg.includes('senha nao encontrada')
+    || msg.includes('senha não encontrada')
+    || msg.includes('certificado nao encontrado')
+    || msg.includes('certificado não encontrado')
+    || msg.includes('credencial nao encontrada')
+    || msg.includes('credencial não encontrada')
+  ) {
+    return { errorCategory: 'auth_terminal', retryableExternally: false };
+  }
+  if (
+    msg.includes('econnreset')
+    || msg.includes('connection reset')
+    || msg.includes('target page, context or browser has been closed')
+    || msg.includes('browser has been closed')
+    || msg.includes('browser disconnected')
+    || msg.includes('net::err')
+    || msg.includes('timeout')
+    || msg.includes('timed out')
+  ) {
+    return { errorCategory: 'transient_process', retryableExternally: true };
+  }
+  return { errorCategory: 'unknown', retryableExternally: false };
 }
 
 async function clickAndSaveDownload(page, clickableLocator, downloadDir) {
@@ -368,6 +465,7 @@ function assertNotOnLogin(url) {
 }
 
 async function loginWithCredentials(page, cpfCnpj, senha) {
+  return await withPageBusy('login.credentials', async () => {
   console.log('   🔐 Fazendo login com CPF/CNPJ e Senha...');
   
   await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
@@ -402,9 +500,11 @@ async function loginWithCredentials(page, cpfCnpj, senha) {
   console.log('   ✅ Login com CPF/CNPJ realizado com sucesso!');
   updateActivity();
   return true;
+  });
 }
 
 async function reloginWithCert(page, cert, dataInicial, dataFinal) {
+  return await executeRelogin(`cert:${cert.alias}`, async () => {
   console.log('   🔄 Fazendo re-login com certificado...');
 
   await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 120000 });
@@ -438,9 +538,11 @@ async function reloginWithCert(page, cert, dataInicial, dataFinal) {
 
   console.log('   ✅ Re-login com certificado realizado');
   updateActivity();
+  });
 }
 
 async function reloginWithCredentials(page, credencial, senha, dataInicial, dataFinal) {
+  return await executeRelogin(`credentials:${credencial.alias || credencial.cpf_cnpj}`, async () => {
   console.log('   🔄 Fazendo re-login com CPF/CNPJ...');
 
   await loginWithCredentials(page, credencial.cpf_cnpj, senha);
@@ -448,9 +550,11 @@ async function reloginWithCredentials(page, credencial, senha, dataInicial, data
 
   console.log('   ✅ Re-login com CPF/CNPJ realizado');
   updateActivity();
+  });
 }
 
 async function applyDateFilterIfNeeded(page, startStr, endStr) {
+  return await withPageBusy(`filter:${startStr}-${endStr}`, async () => {
   setStage('filter.start', `${startStr}..${endStr}`);
   console.log(`   Aplicando filtro para ${startStr}..${endStr}`);
   // Abre o filtro pela mesma UI existente no portal (sem page.goto/refresh)
@@ -530,6 +634,7 @@ async function applyDateFilterIfNeeded(page, startStr, endStr) {
   }
   await page.waitForTimeout(800);
   setStage('filter.done', `${startStr}..${endStr}`);
+  });
 }
 
 async function fillAndFilter(page, dataInicial, dataFinal) {
@@ -647,7 +752,6 @@ async function getTotalRegistros(page) {
 }
 
 let downloadDir = '';
-let reloginUsed = false;
 let totalDownloadsDone = 0;
 
 // Configuração de ritmo de download (anti-detecção) - OTIMIZADA
@@ -706,7 +810,7 @@ async function maybePauseAfterDownloads() {
       console.log(`   ⏸️══════════════════════════════════════════\n`);
     }
     
-    await new Promise((r) => setTimeout(r, pause.ms));
+    await sleepWithActivity(pause.ms, pause.isPause ? 'pausa planejada apos lote' : 'ritmo entre downloads');
     
     // Log de continuação após pausa
     if (pause.isPause) {
@@ -1042,6 +1146,7 @@ async function loginAndDownload({
 }
 
 async function downloadPageItems(page, downloadDir, pagina) {
+  return await withPageBusy(`download-page:${pagina}`, async () => {
   setStage('items.start', `pagina=${pagina}`);
   let xmlCount = 0;
   let pdfCount = 0;
@@ -1117,6 +1222,7 @@ async function downloadPageItems(page, downloadDir, pagina) {
 
   console.log(`   ✅ Página ${pagina}: XMLs=${xmlCount}, PDFs=${pdfCount}`);
   return { xml: xmlCount, pdf: pdfCount };
+  });
 }
 
 (async () => {
@@ -1178,10 +1284,13 @@ async function downloadPageItems(page, downloadDir, pagina) {
   });
   process.stdout.write(JSON.stringify(result));
 })().catch((err) => {
+  const classification = classifyError(err && err.message ? err.message : err);
   const payload = {
     ok: false,
     error: String(err && err.message ? err.message : err),
     stack: err && err.stack ? String(err.stack) : null,
+    errorCategory: classification.errorCategory,
+    retryableExternally: classification.retryableExternally,
   };
   console.error(payload.error);
   process.stdout.write(JSON.stringify(payload));
