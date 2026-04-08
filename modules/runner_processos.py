@@ -15,7 +15,13 @@ from .runner import RunConfig, run_processing as run_processing_without_process
 from .processos_repo import atualizar_status_processo, atualizar_totais_processo, garantir_schema_nfse_processos
 from .execucoes_repo import atualizar_status_execucao, garantir_schema_nfse_execucoes
 from .arquivos_repo import garantir_schema_nfse_processo_arquivos
-from .storage import upload_pdf, upload_xml, upload_relatorio, is_s3_configured
+from .storage import (
+    build_process_storage_key,
+    upload_pdf,
+    upload_xml,
+    upload_relatorio,
+    is_s3_configured,
+)
 from .notas_repo import obter_resumo_processo, garantir_schema_nfse_notas
 from .schemas import StatusEnum
 from .db import get_conn
@@ -164,10 +170,11 @@ def _coletar_arquivos_da_execucao(cfg: RunConfig, resultados_execucao: list[dict
         if chave_visto in vistos:
             return
         vistos.add(chave_visto)
+        storage_key = build_process_storage_key(tipo, cfg.processo_id, p.name)
         tarefas.append({
             "tipo": tipo,
             "path": p,
-            "storage_key": f"processos/{cfg.processo_id}/{p.name}",
+            "storage_key": storage_key,
             "processo_id": cfg.processo_id,
         })
 

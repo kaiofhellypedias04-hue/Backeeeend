@@ -92,6 +92,37 @@ def get_s3_client():
     return _thread_local.client
 
 
+def _normalize_remote_segment(value: str) -> str:
+    return str(value or "").strip().replace("\\", "/").strip("/")
+
+
+def build_process_storage_key(
+    tipo_arquivo: str,
+    processo_id: str,
+    nome_arquivo: str,
+) -> str:
+    tipo_normalizado = (tipo_arquivo or "").strip().lower()
+    pasta_por_tipo = {
+        "xml": "xml",
+        "pdf": "pdf",
+        "relatorio": "planilhas",
+        "planilhas": "planilhas",
+    }
+    subpasta = pasta_por_tipo.get(tipo_normalizado)
+    if not subpasta:
+        raise ValueError(f"Tipo de arquivo remoto invalido: {tipo_arquivo}")
+
+    processo = _normalize_remote_segment(str(processo_id))
+    if not processo:
+        raise ValueError("processo_id obrigatorio para montar o path remoto")
+
+    arquivo = Path(str(nome_arquivo)).name.strip()
+    if not arquivo:
+        raise ValueError("nome_arquivo obrigatorio para montar o path remoto")
+
+    return f"processos/{processo}/{subpasta}/{arquivo}"
+
+
 def upload_file(
     file_path: str,
     storage_key: str,
@@ -110,27 +141,45 @@ def upload_file(
         return None
 
     s3 = get_s3_client()
+    bucket = get_s3_settings()["bucket"]
+
     if s3 is None:
         logger.warning(
-            "[Storage] S3 nao configurado. Mantendo arquivo em modo local: %s -> %s",
-            file_path,
+            "[Storage] Upload remoto ignorado; storage indisponivel. bucket=%s path=%s arquivo_local=%s",
+            bucket,
             storage_key,
+            file_path,
         )
         return storage_key
 
-    bucket = get_s3_settings()["bucket"]
-
     try:
         data = path.read_bytes()
+        logger.info(
+            "[Storage] Iniciando upload: bucket=%s path=%s arquivo_local=%s",
+            bucket,
+            storage_key,
+            file_path,
+        )
         kwargs = {"Bucket": bucket, "Key": storage_key, "Body": data}
         if content_type:
             kwargs["ContentType"] = content_type
 
         s3.put_object(**kwargs)
-        logger.debug("[S3] Upload OK: %s (%.0f KB)", storage_key, len(data) / 1024)
+        logger.info(
+            "[Storage] Upload concluido: bucket=%s path=%s tamanho_kb=%.0f",
+            bucket,
+            storage_key,
+            len(data) / 1024,
+        )
         return storage_key
     except Exception as exc:
-        logger.error("[S3] Erro no upload de %s: %s", file_path, exc)
+        logger.error(
+            "[Storage] Falha no upload: bucket=%s path=%s arquivo_local=%s erro=%s",
+            bucket,
+            storage_key,
+            file_path,
+            exc,
+        )
         return None
 
 
