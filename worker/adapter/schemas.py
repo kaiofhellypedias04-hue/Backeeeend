@@ -15,6 +15,7 @@ class APIInputPayload(BaseModel):
     tipoNota: str = Field("tomados")
     loginType: str = Field("certificado")
     baseDir: Optional[str] = Field(None)
+    useChunkDays: Optional[bool] = Field(False)
     chunkDays: Optional[int] = Field(30)
     debug: bool = Field(False)
     executionConfig: Optional[Dict[str, Any]] = Field({})
@@ -52,6 +53,7 @@ class ExecutionContext(BaseModel):
     start: date
     end: date
     headless: bool
+    use_chunk_days: bool
     chunk_days: int
     tipo_nota: str
     debug: bool
@@ -66,6 +68,7 @@ class RunnerPayload(BaseModel):
     start: date
     end: date
     headless: bool
+    use_chunk_days: bool
     chunk_days: int
     consultar_api: bool = True
     login_type: str

@@ -71,6 +71,11 @@ def main():
     )
 
     p.add_argument("--headless", default="true", help="true/false para Playwright")
+    p.add_argument(
+        "--use-chunk-days",
+        action="store_true",
+        help="Ativa chunk manual por dias. Se omitido, o processamento usa o periodo inteiro.",
+    )
     p.add_argument("--chunk-days", type=int, default=30, help="Tamanho do chunk (max 30 recomendado)")
     args = p.parse_args()
 
@@ -120,6 +125,7 @@ def main():
         start=_parse_date(args.start) if args.start else None,
         end=end,
         headless=_parse_bool(args.headless),
+        use_chunk_days=bool(args.use_chunk_days),
         chunk_days=int(args.chunk_days or 30),
         consultar_api=True,
     )

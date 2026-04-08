@@ -20,6 +20,9 @@ from .playwright_downloader import executar_fluxo_nfse_playwright
 from .run_state_repo import garantir_schema_run_state, upsert_state
 from .spreadsheet import atualizar_planilha_incremental
 
+DEFAULT_CHUNK_DAYS_FALLBACK = 5
+XML_MICROBATCH_SIZE = 100
+
 
 @dataclass
 class RunConfig:
@@ -30,6 +33,7 @@ class RunConfig:
     start: date | None = None
     end: date | None = None
     headless: bool = False
+    use_chunk_days: bool = False
     chunk_days: int = 15  # Chunk manual por data no Python; split >800 continua no Node
     consultar_api: bool = True
     login_type: str = "certificado"  # 'certificado' ou 'cpf_cnpj'
@@ -57,11 +61,45 @@ def _normalize_chunk_days(value: Any) -> int | None:
     return chunk_days if chunk_days > 0 else None
 
 
-def _resolve_processing_chunks(start: date, end: date, chunk_days: Any) -> list[tuple[date, date]]:
+def _normalize_use_chunk_days(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "t", "yes", "y", "sim", "on"}
+
+
+def _resolve_chunk_settings(use_chunk_days: Any, chunk_days: Any) -> tuple[bool, int | None, str | None]:
+    chunk_enabled = _normalize_use_chunk_days(use_chunk_days)
+    if not chunk_enabled:
+        return False, None, None
+
     normalized_chunk_days = _normalize_chunk_days(chunk_days)
-    if normalized_chunk_days is None:
+    if normalized_chunk_days is not None:
+        return True, normalized_chunk_days, None
+
+    return (
+        True,
+        DEFAULT_CHUNK_DAYS_FALLBACK,
+        (
+            "chunk_days invalido para chunk manual; "
+            f"fallback aplicado: {DEFAULT_CHUNK_DAYS_FALLBACK} dia(s)"
+        ),
+    )
+
+
+def _resolve_processing_chunks(start: date, end: date, use_chunk_days: Any, chunk_days: Any) -> list[tuple[date, date]]:
+    chunk_enabled, normalized_chunk_days, _ = _resolve_chunk_settings(use_chunk_days, chunk_days)
+    if not chunk_enabled or normalized_chunk_days is None:
         return [(start, end)]
     return list(_chunk_ranges(start, end, normalized_chunk_days))
+
+
+def _iter_file_batches(file_paths: list[str], batch_size: int):
+    if batch_size <= 0:
+        batch_size = len(file_paths) or 1
+    for idx in range(0, len(file_paths), batch_size):
+        yield file_paths[idx: idx + batch_size]
 
 
 def _resolver_intervalo_automatico(cfg: RunConfig, cert_alias: str) -> tuple[date, date]:
@@ -112,15 +150,29 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                 raise ValueError("Modo manual requer start e end")
             start, end = cfg.start, cfg.end
 
-        chunk_days_valid = _normalize_chunk_days(getattr(cfg, "chunk_days", None))
-        chunks = _resolve_processing_chunks(start, end, getattr(cfg, "chunk_days", None))
+        chunk_enabled, chunk_days_valid, chunk_warning = _resolve_chunk_settings(
+            getattr(cfg, "use_chunk_days", False),
+            getattr(cfg, "chunk_days", None),
+        )
+        chunks = _resolve_processing_chunks(
+            start,
+            end,
+            getattr(cfg, "use_chunk_days", False),
+            getattr(cfg, "chunk_days", None),
+        )
 
         print(f"\nPeriodo total solicitado: {start.isoformat()} -> {end.isoformat()}")
         print(
-            "Chunk days recebido: "
-            f"{getattr(cfg, 'chunk_days', None)} | "
-            f"{'chunk manual ativo' if chunk_days_valid is not None else 'chunk manual desativado'}"
+            "Configuracao de chunk manual: "
+            f"use_chunk_days={chunk_enabled} | "
+            f"chunk_days_recebido={getattr(cfg, 'chunk_days', None)} | "
+            f"chunk_days_efetivo={chunk_days_valid if chunk_enabled else 'desativado'}"
         )
+        if chunk_warning:
+            print(f"[chunk] Aviso: {chunk_warning}")
+            logger.warning(chunk_warning)
+        if not chunk_enabled:
+            print("Modo de processamento: normal (sem chunk manual).")
         print(f"Quantidade de chunks gerados: {len(chunks)}")
         for idx_chunk, (chunk_start, chunk_end) in enumerate(chunks, start=1):
             print(f"  Chunk {idx_chunk}/{len(chunks)}: {chunk_start.isoformat()} -> {chunk_end.isoformat()}")
@@ -152,46 +204,9 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                 logger.info("Nenhum XML novo para processar neste chunk.")
                 return resultado
 
-            logger.info("Processando XMLs", {"count": len(xml_paths)})
-            dados = converter.process_multiple_files(xml_paths)
-            resultado["dados_extraidos"] = len(dados or [])
-
-            if not dados:
-                logger.warning("Nenhum dado extraido dos XMLs movidos.")
-                resultado["status"] = "sem_dados"
-                return resultado
-
-            dados = converter.consultar_cnpjs_em_lote(dados)
-            resultado["dados_extraidos"] = len(dados or [])
-
             notas_salvas = 0
             erros_salvamento: list[str] = []
-
-            for d in dados:
-                try:
-                    arquivo_origem = d.get("_arquivo_origem") or d.get("_Arquivo_Origem")
-                    salvar_nota_nfse(
-                        cert_alias,
-                        getattr(cfg, "processo_id", None),
-                        d,
-                        arquivo_origem=arquivo_origem,
-                    )
-                    notas_salvas += 1
-                except Exception as save_err:
-                    erro_txt = (
-                        f"nota_chave={gerar_chave_nfse(d)} | "
-                        f"arquivo={d.get('_arquivo_origem') or d.get('_Arquivo_Origem')} | "
-                        f"erro={save_err}"
-                    )
-                    erros_salvamento.append(erro_txt)
-                    logger.warning(f"Erro salvando nota | {erro_txt}")
-
-            resultado["notas_salvas"] = notas_salvas
-            resultado["erros_salvamento"] = erros_salvamento
-
-            if xml_paths and notas_salvas == 0:
-                resultado["status"] = "falha_sem_notas"
-                return resultado
+            dados_extraidos_total = 0
 
             estrutura = criar_estrutura_pastas(
                 base_dir_cert,
@@ -209,19 +224,98 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                 planilha_nome = f"auditoria_nfse_{cert_alias}_{nome_periodo}.xlsx"
                 caminho_planilha = os.path.join(planilhas_dir, planilha_nome)
 
-            existentes, adicionados = atualizar_planilha_incremental(
-                converter,
-                caminho_planilha,
-                dados,
-                cert_alias=cert_alias,
-            )
+            batch_size = XML_MICROBATCH_SIZE if chunk_enabled else max(len(xml_paths), 1)
+            total_batches = max(1, (len(xml_paths) + batch_size - 1) // batch_size)
             logger.info(
-                "Planilha atualizada",
+                "Processando XMLs",
                 {
-                    "periodo": nome_periodo,
-                    "existentes": existentes,
-                    "adicionados": adicionados,
-                    "planilha": os.path.basename(caminho_planilha),
+                    "count": len(xml_paths),
+                    "batch_size": batch_size,
+                    "total_batches": total_batches,
+                    "chunk_mode": chunk_enabled,
+                },
+            )
+
+            for idx_batch, xml_batch in enumerate(_iter_file_batches(xml_paths, batch_size), start=1):
+                logger.info(
+                    "Processando lote de XMLs",
+                    {
+                        "batch_index": idx_batch,
+                        "batch_total": total_batches,
+                        "count": len(xml_batch),
+                        "chunk_period": f"{periodo_start.isoformat()}..{periodo_end.isoformat()}",
+                    },
+                )
+                dados = converter.process_multiple_files(xml_batch)
+                if not dados:
+                    logger.warning(
+                        "Nenhum dado extraido do lote de XMLs",
+                        {"batch_index": idx_batch, "batch_total": total_batches},
+                    )
+                    continue
+
+                dados = converter.consultar_cnpjs_em_lote(dados)
+                dados_extraidos_total += len(dados or [])
+
+                for d in dados:
+                    try:
+                        arquivo_origem = d.get("_arquivo_origem") or d.get("_Arquivo_Origem")
+                        salvar_nota_nfse(
+                            cert_alias,
+                            getattr(cfg, "processo_id", None),
+                            d,
+                            arquivo_origem=arquivo_origem,
+                        )
+                        notas_salvas += 1
+                    except Exception as save_err:
+                        erro_txt = (
+                            f"nota_chave={gerar_chave_nfse(d)} | "
+                            f"arquivo={d.get('_arquivo_origem') or d.get('_Arquivo_Origem')} | "
+                            f"erro={save_err}"
+                        )
+                        erros_salvamento.append(erro_txt)
+                        logger.warning(f"Erro salvando nota | {erro_txt}")
+
+                existentes, adicionados = atualizar_planilha_incremental(
+                    converter,
+                    caminho_planilha,
+                    dados,
+                    cert_alias=cert_alias,
+                )
+                logger.info(
+                    "Planilha atualizada",
+                    {
+                        "periodo": nome_periodo,
+                        "batch_index": idx_batch,
+                        "batch_total": total_batches,
+                        "existentes": existentes,
+                        "adicionados": adicionados,
+                        "planilha": os.path.basename(caminho_planilha),
+                    },
+                )
+
+            resultado["dados_extraidos"] = dados_extraidos_total
+            resultado["notas_salvas"] = notas_salvas
+            resultado["erros_salvamento"] = erros_salvamento
+
+            if dados_extraidos_total == 0:
+                logger.warning("Nenhum dado extraido dos XMLs movidos.")
+                resultado["status"] = "sem_dados"
+                return resultado
+
+            if xml_paths and notas_salvas == 0:
+                resultado["status"] = "falha_sem_notas"
+                return resultado
+
+            logger.info(
+                "Consolidacao do chunk concluida",
+                {
+                    "periodo": f"{periodo_start.isoformat()}..{periodo_end.isoformat()}",
+                    "xml_movidos": len(xml_paths),
+                    "pdf_movidos": len(pdf_paths),
+                    "dados_extraidos": dados_extraidos_total,
+                    "notas_salvas": notas_salvas,
+                    "erros_salvamento": len(erros_salvamento),
                 },
             )
 
@@ -252,6 +346,8 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
             total_pdf_movidos = 0
             total_dados_extraidos = 0
             total_notas_salvas = 0
+            xml_paths_consolidados: list[str] = []
+            pdf_paths_consolidados: list[str] = []
             planilha_paths: list[str] = []
             erros_salvamento: list[str] = []
 
@@ -332,6 +428,8 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                 total_pdf_movidos += int(processamento["pdf_movidos"] or 0)
                 total_dados_extraidos += int(processamento["dados_extraidos"] or 0)
                 total_notas_salvas += int(processamento["notas_salvas"] or 0)
+                xml_paths_consolidados.extend(processamento.get("xml_paths") or [])
+                pdf_paths_consolidados.extend(processamento.get("pdf_paths") or [])
                 planilha_paths.extend(processamento.get("planilha_paths") or [])
                 erros_salvamento.extend(processamento.get("erros_salvamento") or [])
 
@@ -343,8 +441,11 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                 "cert_alias": cert_alias,
                 "periodo_start": start,
                 "periodo_end": end,
+                "use_chunk_days": chunk_enabled,
                 "chunk_days": chunk_days_valid,
                 "total_chunks": len(chunks),
+                "xml_paths": list(dict.fromkeys(xml_paths_consolidados)),
+                "pdf_paths": list(dict.fromkeys(pdf_paths_consolidados)),
                 "xml_movidos": total_xml_movidos,
                 "pdf_movidos": total_pdf_movidos,
                 "dados_extraidos": total_dados_extraidos,
@@ -353,6 +454,20 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                 "erros_salvamento": erros_salvamento,
                 "status": "ok",
             }
+            logger.info(
+                "Consolidacao final do certificado",
+                {
+                    "cert_alias": cert_alias,
+                    "use_chunk_days": chunk_enabled,
+                    "chunk_days": chunk_days_valid,
+                    "total_chunks": len(chunks),
+                    "xml_baixados": total_xmls_baixados,
+                    "xml_movidos": total_xml_movidos,
+                    "pdf_movidos": total_pdf_movidos,
+                    "dados_extraidos": total_dados_extraidos,
+                    "notas_salvas": total_notas_salvas,
+                },
+            )
 
             upsert_state(cert_alias, last_processed_date=last_ok_date or end, status="ok", last_error=None)
             resultado_cert["status"] = "ok"

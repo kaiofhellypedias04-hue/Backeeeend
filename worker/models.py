@@ -35,6 +35,7 @@ class WorkerPayload:
     tipoNota: str = "tomados"
     loginType: str = "certificado"
     baseDir: Optional[str] = None
+    useChunkDays: Optional[bool] = False
     chunkDays: Optional[int] = 30
     executionConfig: Optional[Dict[str, Any]] = None
 
@@ -69,6 +70,7 @@ class APIInputPayload(BaseModel):
     tipoNota: str = Field("tomados", regex="^(tomados|prestados)$")
     loginType: str = Field("certificado", regex="^(certificado|cpf_cnpj)$")
     baseDir: Optional[str] = None
+    useChunkDays: Optional[bool] = False
     chunkDays: Optional[int] = 30
     debug: bool = False
     executionConfig: Optional[Dict[str, Any]] = {}
@@ -100,6 +102,7 @@ class RunnerPayload(BaseModel):
     start: date
     end: date
     headless: bool
+    use_chunk_days: bool
     chunk_days: int
     consultar_api: bool = True
     login_type: str

@@ -110,6 +110,7 @@ class ExecRequest(BaseModel):
     start: date
     end: date
     headless: bool = True
+    use_chunk_days: bool = False
     chunk_days: int = 30
     consultar_api: bool = True
     login_type: LoginTypeEnum = LoginTypeEnum.certificado
@@ -174,6 +175,7 @@ def _build_run_config(req: ExecRequest, cert_alias: str) -> RunConfig:
         start=req.start,
         end=req.end,
         headless=req.headless,
+        use_chunk_days=req.use_chunk_days,
         chunk_days=req.chunk_days,
         consultar_api=req.consultar_api,
         login_type=req.login_type,
@@ -640,6 +642,7 @@ def agendar_execucao(req: ExecRequest):
                 start=inicio,
                 end=fim,
                 headless=req.headless,
+                use_chunk_days=req.use_chunk_days,
                 chunk_days=req.chunk_days,
                 consultar_api=req.consultar_api,
                 login_type=req.login_type,

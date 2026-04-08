@@ -179,6 +179,14 @@ def _coletar_arquivos_da_execucao(cfg: RunConfig, resultados_execucao: list[dict
             _add_file('pdf', path)
         for path in processamento.get('planilha_paths') or []:
             _add_file('relatorio', path)
+        for chunk in resultado.get('chunks') or []:
+            processamento_chunk = chunk.get('processamento') or {}
+            for path in processamento_chunk.get('xml_paths') or []:
+                _add_file('xml', path)
+            for path in processamento_chunk.get('pdf_paths') or []:
+                _add_file('pdf', path)
+            for path in processamento_chunk.get('planilha_paths') or []:
+                _add_file('relatorio', path)
 
     return tarefas
 

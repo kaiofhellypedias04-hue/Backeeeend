@@ -28,7 +28,9 @@ def obter_configuracoes_iniciais():
         'hora_automatico': None,
         'tipo_login': 'certificado',  # 'certificado' ou 'cpf_cnpj'
         'credencial': None,  # alias da credencial CPF/CNPJ
-        'tipo_nota': 'tomados'  # 'tomados' (Recebidas) ou 'prestados' (Emitidas)
+        'tipo_nota': 'tomados',  # 'tomados' (Recebidas) ou 'prestados' (Emitidas)
+        'use_chunk_days': False,
+        'chunk_days': 5,
     }
     
     def selecionar_diretorio_base():
@@ -509,6 +511,24 @@ def obter_configuracoes_iniciais():
         try:
             modo = modo_var.get()
             tipo_login = tipo_login_var.get()  # 'certificado' ou 'cpf_cnpj'
+            use_chunk_days = bool(use_chunk_days_var.get())
+            chunk_days_value = chunk_days_var.get().strip()
+
+            chunk_days_result = 5
+            if use_chunk_days:
+                try:
+                    parsed_chunk_days = int(chunk_days_value)
+                    if parsed_chunk_days <= 0:
+                        raise ValueError()
+                    chunk_days_result = parsed_chunk_days
+                except Exception:
+                    chunk_days_result = 5
+                    messagebox.showwarning(
+                        "Chunk por dias",
+                        "Valor de dias por chunk invalido. Sera usado o fallback seguro de 5 dias.",
+                    )
+            resultado['use_chunk_days'] = use_chunk_days
+            resultado['chunk_days'] = chunk_days_result
             
             if modo == "download":
                 data_inicial = cal_inicial.get_date()
@@ -654,6 +674,7 @@ def obter_configuracoes_iniciais():
             # Habilitar campos de data
             cal_inicial.config(state='normal')
             cal_final.config(state='normal')
+            _update_chunk_days_state()
         elif modo == "single_cert":
             frame_datas.grid(row=4, column=0, columnspan=2, pady=10, padx=20, sticky="ew")
             frame_diretorio_base.grid(row=5, column=0, columnspan=2, pady=10, padx=20, sticky="ew")
@@ -666,6 +687,7 @@ def obter_configuracoes_iniciais():
             # Habilitar campos de data
             cal_inicial.config(state='normal')
             cal_final.config(state='normal')
+            _update_chunk_days_state()
         elif modo == "automatic":
             frame_datas.grid(row=4, column=0, columnspan=2, pady=10, padx=20, sticky="ew")
             frame_diretorio_base.grid(row=5, column=0, columnspan=2, pady=10, padx=20, sticky="ew")
@@ -679,6 +701,7 @@ def obter_configuracoes_iniciais():
             # Desabilitar campos de data
             cal_inicial.config(state='disabled')
             cal_final.config(state='disabled')
+            _update_chunk_days_state()
         else:
             frame_datas.grid_remove()
             frame_diretorio_base.grid_remove()
@@ -729,6 +752,13 @@ def obter_configuracoes_iniciais():
             except Exception:
                 # Fallback: rolar para 80% do conteúdo
                 canvas.yview_moveto(0.8)
+
+    def _update_chunk_days_state(*_args):
+        state = 'normal' if use_chunk_days_var.get() else 'disabled'
+        entry_chunk_days.config(state=state)
+        label_chunk_days_hint.config(
+            text="Chunk manual ativado." if use_chunk_days_var.get() else "Chunk manual desativado: fluxo normal."
+        )
     
     root = tk.Tk()
     root.title("Sistema NFS-e - Auditoria Fiscal")
@@ -850,6 +880,8 @@ def obter_configuracoes_iniciais():
     
     tipo_login_var = tk.StringVar(value="certificado")
     tipo_nota_var = tk.StringVar(value="tomados")  # 'tomados' (Recebidas) ou 'prestados' (Emitidas)
+    use_chunk_days_var = tk.BooleanVar(value=False)
+    chunk_days_var = tk.StringVar(value="5")
     
     rb_login_cert = tk.Radiobutton(frame_tipo_login, text="Certificado Digital (PFX)", 
                                  variable=tipo_login_var, value="certificado", 
@@ -917,9 +949,34 @@ def obter_configuracoes_iniciais():
     tk.Label(frame_datas, text="Data Final:", font=("Arial", 10), 
             bg='#f0f0f0').grid(row=1, column=0, padx=5, pady=5, sticky='e')
     cal_final = DateEntry(frame_datas, width=12, background='darkblue',
-                         foreground='white', borderwidth=2, date_pattern='dd/mm/yyyy')
+                          foreground='white', borderwidth=2, date_pattern='dd/mm/yyyy')
     cal_final.set_date(datetime.now())
     cal_final.grid(row=1, column=1, padx=5, pady=5, sticky='w')
+
+    chk_use_chunk_days = tk.Checkbutton(
+        frame_datas,
+        text="Ativar chunk por dias",
+        variable=use_chunk_days_var,
+        command=_update_chunk_days_state,
+        bg='#f0f0f0',
+        font=("Arial", 10),
+    )
+    chk_use_chunk_days.grid(row=2, column=0, padx=5, pady=(10, 5), sticky='w')
+
+    tk.Label(frame_datas, text="Dias por chunk:", font=("Arial", 10), bg='#f0f0f0').grid(
+        row=2, column=1, padx=5, pady=(10, 5), sticky='e'
+    )
+    entry_chunk_days = ttk.Entry(frame_datas, width=8, textvariable=chunk_days_var)
+    entry_chunk_days.grid(row=2, column=2, padx=5, pady=(10, 5), sticky='w')
+
+    label_chunk_days_hint = tk.Label(
+        frame_datas,
+        text="Chunk manual desativado: fluxo normal.",
+        font=("Arial", 8),
+        bg='#f0f0f0',
+        fg='#666',
+    )
+    label_chunk_days_hint.grid(row=3, column=0, columnspan=3, padx=5, pady=(0, 5), sticky='w')
     
     # Frame diretório base (para download)
     frame_diretorio_base = tk.LabelFrame(main_frame, text="Diretório Base para Salvar Arquivos", 
@@ -1034,6 +1091,7 @@ def obter_configuracoes_iniciais():
     main_frame.columnconfigure(0, weight=1)
     main_frame.columnconfigure(1, weight=1)
     
+    _update_chunk_days_state()
     root.lift()
     root.focus_force()
     root.mainloop()

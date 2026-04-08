@@ -47,6 +47,7 @@ class Mapper:
                 start=start,
                 end=end,
                 headless=payload.headless,
+                use_chunk_days=bool(payload.useChunkDays),
                 chunk_days=payload.chunkDays,
                 tipo_nota=payload.tipoNota,
                 debug=payload.debug
@@ -61,6 +62,7 @@ class Mapper:
                 start=context.start,
                 end=context.end,
                 headless=context.headless,
+                use_chunk_days=context.use_chunk_days,
                 chunk_days=context.chunk_days,
                 login_type=context.loginType,
                 tipo_nota=context.tipo_nota
