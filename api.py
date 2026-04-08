@@ -166,6 +166,18 @@ def _get_data_dir(cert_alias: str = "") -> str:
 
 
 def _build_run_config(req: ExecRequest, cert_alias: str) -> RunConfig:
+    logger.info(
+        "Montando RunConfig",
+        extra={
+            "cert_alias": cert_alias,
+            "start": req.start.isoformat() if req.start else None,
+            "end": req.end.isoformat() if req.end else None,
+            "use_chunk_days": req.use_chunk_days,
+            "chunk_days": req.chunk_days,
+            "login_type": str(req.login_type),
+            "tipo_nota": str(req.tipo_nota),
+        },
+    )
     return RunConfig(
         modo="manual",
         base_dir=_get_data_dir(cert_alias),
@@ -275,6 +287,15 @@ def startup_event():
             # Compatibilidade: payload antigo pode ter base_dir, ignoramos
             payload_clean = {k: v for k, v in payload.items() if k != 'base_dir'}
             req = ExecRequest(**payload_clean)
+            logger.info(
+                "Payload de agendamento restaurado",
+                extra={
+                    "cert_aliases": list(req.cert_aliases),
+                    "use_chunk_days": req.use_chunk_days,
+                    "chunk_days": req.chunk_days,
+                    "hora_execucao": req.hora_execucao,
+                },
+            )
         except Exception:
             return None
 
@@ -525,6 +546,18 @@ def executar(req: ExecRequest):
     if req.start > req.end:
         raise HTTPException(status_code=400, detail="'start' não pode ser maior que 'end'")
 
+    logger.info(
+        "Requisicao /executar recebida",
+        extra={
+            "cert_aliases": list(req.cert_aliases),
+            "start": req.start.isoformat(),
+            "end": req.end.isoformat(),
+            "use_chunk_days": req.use_chunk_days,
+            "chunk_days": req.chunk_days,
+            "login_type": str(req.login_type),
+            "tipo_nota": str(req.tipo_nota),
+        },
+    )
     aliases_validos = _get_aliases_validos(req.login_type)
     invalidos = [a for a in req.cert_aliases if a not in aliases_validos]
     if invalidos:
@@ -543,6 +576,18 @@ def executar(req: ExecRequest):
             end_date=req.end,
         ))
         criar_execucao(job_id, proc_id, req.model_dump(mode="json"))
+        logger.info(
+            "Execucao persistida",
+            extra={
+                "job_id": job_id,
+                "processo_id": proc_id,
+                "cert_alias": alias,
+                "use_chunk_days": req.use_chunk_days,
+                "chunk_days": req.chunk_days,
+                "start": req.start.isoformat(),
+                "end": req.end.isoformat(),
+            },
+        )
 
         cfg = _build_run_config(req, alias)
         pcfg = ProcessRunConfig(
@@ -582,6 +627,18 @@ def agendar_execucao(req: ExecRequest):
 
     job_id = str(uuid.uuid4())
     payload = req.model_dump(mode="json")
+    logger.info(
+        "Requisicao /agendar recebida",
+        extra={
+            "job_id": job_id,
+            "cert_aliases": list(req.cert_aliases),
+            "use_chunk_days": req.use_chunk_days,
+            "chunk_days": req.chunk_days,
+            "hora_execucao": req.hora_execucao,
+            "login_type": str(req.login_type),
+            "tipo_nota": str(req.tipo_nota),
+        },
+    )
 
     def _segundos_ate_proximo_horario() -> float:
         """Calcula quantos segundos faltam para o próximo disparo no horário configurado."""
@@ -632,6 +689,18 @@ def agendar_execucao(req: ExecRequest):
                 "hora_execucao": hora_str,
             }
             criar_execucao(execution_id, proc_id, exec_payload)
+            logger.info(
+                "Execucao agendada persistida",
+                extra={
+                    "execution_id": execution_id,
+                    "processo_id": proc_id,
+                    "cert_alias": alias,
+                    "use_chunk_days": exec_payload.get("use_chunk_days"),
+                    "chunk_days": exec_payload.get("chunk_days"),
+                    "start": exec_payload.get("start"),
+                    "end": exec_payload.get("end"),
+                },
+            )
 
             cfg = RunConfig(
                 modo="manual",
@@ -737,6 +806,8 @@ def get_execucoes(
             "mode":             "automatico" if payload.get("agendado") else "manual",
             "period_start":     payload.get("start"),
             "period_end":       payload.get("end"),
+            "use_chunk_days":   payload.get("use_chunk_days", False),
+            "chunk_days":       payload.get("chunk_days"),
             "status":           row.get("status"),
             "started_at":       started_at,
             "finished_at":      finished_at,
@@ -1096,6 +1167,11 @@ def download_relatorio_csv(processo_id: str):
         ("Razão Social",            "razao_social"),
         ("N° Documento",            "numero_documento"),
         ("Valor Total",             "valor_total"),
+        ("Status nota",             "status_nota"),
+        ("Status",                  "status"),
+        ("Diverg\u00eancia",            "divergencia_fila_label"),
+        ("Prioridade",              "prioridade_manual"),
+        ("Respons\u00e1vel",            "responsavel"),
         ("Valor B/C",               "valor_base"),
         ("Status Base de Cálculo",  "status_base_calculo"),
         ("CSRF",                    "csrf"),

@@ -10,6 +10,7 @@ from modules.fiscal_status import (
     has_real_alertas_fiscais_divergencia,
     is_alertas_fiscais_final_segment_correto,
     is_observacao_fiscal_final_segment_correto,
+    resolve_manual_note_status,
 )
 
 
@@ -133,6 +134,11 @@ class FiscalStatusTests(unittest.TestCase):
 
         expected = build_sql_status_expr("n").strip()
         self.assertEqual(STATUS_EXPR.strip(), expected, "STATUS_EXPR deve usar regra centralizada")
+
+    def test_notas_repo_status_nota_reusa_expr_da_fila(self):
+        from modules.notas_repo import STATUS_FILA_EXPR, STATUS_NOTA_EXPR
+
+        self.assertEqual(STATUS_NOTA_EXPR.strip(), STATUS_FILA_EXPR.strip())
 
     def test_notas_repo_anexa_alerta_sem_duplicar(self):
         from modules.notas_repo import _append_alerta_if_missing
@@ -345,6 +351,82 @@ class FiscalStatusTests(unittest.TestCase):
             "observacao_interna": None,
         }
         self.assertEqual(compute_final_queue_status(payload), "correta")
+
+    def test_status_fila_manual_substituida_e_normalizado(self):
+        self.assertEqual(resolve_manual_note_status("Substituída"), "substituida")
+        self.assertEqual(compute_final_queue_status({"status_fila_manual": "Substituída"}), "substituida")
+
+    def test_status_compare_tolera_um_centavo(self):
+        from modules.notas_repo import _status_compare
+
+        self.assertEqual(_status_compare(1768.57, 1768.56), "ok")
+
+    def test_status_compare_mantem_divergencia_real(self):
+        from modules.notas_repo import _status_compare
+
+        self.assertEqual(_status_compare(1768.58, 1768.56), "divergente")
+
+    def test_validacao_retencoes_tolera_um_centavo_sem_alerta(self):
+        from modules.nfse_xml_converter import NFSeXMLConverter
+
+        conv = NFSeXMLConverter()
+        conv.REGRAS_RETENCOES["7.02"] = {
+            "irrf_percent": 1.5,
+            "irrf_flag": "SIM",
+            "csrf_percent": 4.65,
+            "csrf_flag": "SIM",
+            "inss_bool": False,
+            "inss_flag": "NÃO",
+        }
+        dados = {
+            "Valor Total": 1000.0,
+            "Valor B/C": 1000.0,
+            "IRRF": 15.01,
+            "CSRF": 46.49,
+            "INSS": 0.0,
+        }
+
+        resultado = conv.validar_retencoes(
+            dados,
+            regime="Lucro Presumido",
+            codigo_servico="7.02",
+            tipo_retencao_csrf="",
+            tem_irrf_retido=True,
+            tem_inss_retido=False,
+        )
+
+        self.assertEqual(resultado["alertas"], [])
+
+    def test_validacao_retencoes_mantem_alerta_quando_ultrapassa_tolerancia(self):
+        from modules.nfse_xml_converter import NFSeXMLConverter
+
+        conv = NFSeXMLConverter()
+        conv.REGRAS_RETENCOES["7.02"] = {
+            "irrf_percent": 1.5,
+            "irrf_flag": "SIM",
+            "csrf_percent": 4.65,
+            "csrf_flag": "SIM",
+            "inss_bool": False,
+            "inss_flag": "NÃO",
+        }
+        dados = {
+            "Valor Total": 1000.0,
+            "Valor B/C": 1000.0,
+            "IRRF": 15.02,
+            "CSRF": 46.50,
+            "INSS": 0.0,
+        }
+
+        resultado = conv.validar_retencoes(
+            dados,
+            regime="Lucro Presumido",
+            codigo_servico="7.02",
+            tipo_retencao_csrf="",
+            tem_irrf_retido=True,
+            tem_inss_retido=False,
+        )
+
+        self.assertTrue(any("IRRF retido divergente" in alerta for alerta in resultado["alertas"]))
 
 
 if __name__ == "__main__":

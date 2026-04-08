@@ -14,12 +14,15 @@ from .fiscal_status import (
     build_sql_queue_status_expr,
     build_sql_status_expr,
     compute_base_calculation_status,
+    has_material_monetary_difference,
+    MONETARY_TOLERANCE,
 )
 
 
 STATUS_EXPR = build_sql_status_expr("n")
 
 STATUS_FILA_EXPR = build_sql_queue_status_expr("n", note_status_expr=STATUS_EXPR)
+STATUS_NOTA_EXPR = STATUS_FILA_EXPR
 STATUS_FILA_FILTER_EXPR = f"LOWER(BTRIM(COALESCE({STATUS_FILA_EXPR}, '')))"
 STATUS_FILA_DIVERGENCIA_EXPR = (
     f"CASE WHEN LOWER(BTRIM(COALESCE({STATUS_FILA_EXPR}, ''))) = 'divergente' THEN TRUE ELSE FALSE END"
@@ -371,12 +374,16 @@ def _to_decimal(v: Any) -> Optional[float]:
         return None
 
 
-def _status_compare(xml_value: Optional[float], expected_value: Optional[float], tolerance: float = 0.01) -> str:
+def _status_compare(
+    xml_value: Optional[float],
+    expected_value: Optional[float],
+    tolerance: float = MONETARY_TOLERANCE,
+) -> str:
     if xml_value is None:
         return "ausente"
     if expected_value is None:
         return "ok"
-    return "ok" if abs(xml_value - expected_value) <= tolerance else "divergente"
+    return "divergente" if has_material_monetary_difference(xml_value, expected_value, tolerance) else "ok"
 
 
 def _build_campos_ausentes_xml(data: dict) -> Optional[str]:
@@ -742,11 +749,12 @@ def listar_notas_por_processo(
                    n.irrf_calculado,
                    n.csrf_calculado,
                    n.iss_calculado,
-                   {STATUS_FILA_EXPR} as status,
+                   {STATUS_NOTA_EXPR} as status,
+                   {STATUS_NOTA_EXPR} as status_nota,
                    {STATUS_EXPR} as status_tecnico,
-                   {STATUS_FILA_EXPR} as status_fila,
-                   {STATUS_FILA_EXPR} as status_exibicao,
-                   {STATUS_FILA_EXPR} as status_fila_final,
+                   {STATUS_NOTA_EXPR} as status_fila,
+                   {STATUS_NOTA_EXPR} as status_exibicao,
+                   {STATUS_NOTA_EXPR} as status_fila_final,
                    {STATUS_FILA_DIVERGENCIA_EXPR} as divergencia_fila_final,
                    {STATUS_FILA_LABEL_EXPR} as divergencia_fila_label,
                    n.incidencia_iss,
@@ -835,11 +843,12 @@ def listar_notas_agrupadas(filters: Optional[dict] = None, page: int = 1, page_s
                    n.irrf_calculado,
                    n.csrf_calculado,
                    n.iss_calculado,
-                   {STATUS_FILA_EXPR} as status,
+                   {STATUS_NOTA_EXPR} as status,
+                   {STATUS_NOTA_EXPR} as status_nota,
                    {STATUS_EXPR} as status_tecnico,
-                   {STATUS_FILA_EXPR} as status_fila,
-                   {STATUS_FILA_EXPR} as status_exibicao,
-                   {STATUS_FILA_EXPR} as status_fila_final,
+                   {STATUS_NOTA_EXPR} as status_fila,
+                   {STATUS_NOTA_EXPR} as status_exibicao,
+                   {STATUS_NOTA_EXPR} as status_fila_final,
                    {STATUS_FILA_DIVERGENCIA_EXPR} as divergencia_fila_final,
                    {STATUS_FILA_LABEL_EXPR} as divergencia_fila_label,
                    n.alertas_fiscais,

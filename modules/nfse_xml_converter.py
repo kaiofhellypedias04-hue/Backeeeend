@@ -16,7 +16,13 @@ import xml.etree.ElementTree as ET
 import re
 import unicodedata
 import pandas as pd
-from .fiscal_status import compute_base_calculation_status, compute_final_note_status
+from .fiscal_status import (
+    MONETARY_TOLERANCE,
+    compute_base_calculation_status,
+    compute_final_note_status,
+    has_material_monetary_difference,
+    is_effectively_zero,
+)
 import os
 import traceback
 from datetime import datetime
@@ -324,17 +330,17 @@ class NFSeXMLConverter:
         
         if base_zerada:
             # Base zerada com IRRF retido = divergência
-            if valor_irrf > 0:
+            if not is_effectively_zero(valor_irrf, MONETARY_TOLERANCE):
                 alertas.append(
                     f"BASE ZERADA: IRRF retido ({valor_irrf:.2f}) mas base de cálculo é zero. Verificar!"
                 )
             # Base zerada com CSRF retido = divergência
-            if valor_csrf > 0:
+            if not is_effectively_zero(valor_csrf, MONETARY_TOLERANCE):
                 alertas.append(
                     f"BASE ZERADA: CSRF retido ({valor_csrf:.2f}) mas base de cálculo é zero. Verificar!"
                 )
             # Base zerada com INSS retido = divergência
-            if valor_inss > 0:
+            if not is_effectively_zero(valor_inss, MONETARY_TOLERANCE):
                 alertas.append(
                     f"BASE ZERADA: INSS retido ({valor_inss:.2f}) mas base de cálculo é zero. Verificar!"
                 )
@@ -351,15 +357,15 @@ class NFSeXMLConverter:
         # REGRA 1: MEI - SEMPRE sem retenção (não valida mais nada)
         # ================================================================
         if regime == 'MEI':
-            if valor_irrf != 0 or tem_irrf_retido:
+            if not is_effectively_zero(valor_irrf, MONETARY_TOLERANCE) or tem_irrf_retido:
                 alertas.append(
                     f"MEI: IRRF não deve ser retido. Valor encontrado: {valor_irrf:.2f}"
                 )
-            if valor_csrf != 0 or (tipo_retencao_csrf and str(tipo_retencao_csrf).strip()):
+            if not is_effectively_zero(valor_csrf, MONETARY_TOLERANCE) or (tipo_retencao_csrf and str(tipo_retencao_csrf).strip()):
                 alertas.append(
                     f"MEI: CSRF não deve ser retido. Valor encontrado: {valor_csrf:.2f}"
                 )
-            if valor_inss != 0:
+            if not is_effectively_zero(valor_inss, MONETARY_TOLERANCE):
                 alertas.append(
                     f"MEI: INSS não deve ser retido. Valor encontrado: {valor_inss:.2f}"
                 )
@@ -372,27 +378,27 @@ class NFSeXMLConverter:
         # ================================================================
         if regime in ['Optante S.N', 'Simples Nacional', 'Simples']:
             # IRRF: SEMPRE sem retenção para optantes (mesmo com base zerada)
-            if valor_irrf != 0 or tem_irrf_retido:
+            if not is_effectively_zero(valor_irrf, MONETARY_TOLERANCE) or tem_irrf_retido:
                 alertas.append(
                     f"Optante Simples: IRRF não deve ser retido para código {codigo_norm}. Valor encontrado: {valor_irrf:.2f}"
                 )
             # CSRF: SEMPRE sem retenção para optantes (mesmo com base zerada)
-            if valor_csrf != 0 or (tipo_retencao_csrf and str(tipo_retencao_csrf).strip()):
+            if not is_effectively_zero(valor_csrf, MONETARY_TOLERANCE) or (tipo_retencao_csrf and str(tipo_retencao_csrf).strip()):
                 alertas.append(
                     f"Optante Simples: CSRF não deve ser retido para código {codigo_norm}. Valor encontrado: {valor_csrf:.2f}"
                 )
             # Se base zerada e tem algum imposto retido, já gerou alerta acima
             # Agora valida INSS conforme Anexo IV (só faz sentido se base > 0)
             if not base_zerada and base_calculo > 0:
-                if exp_inss_bool is True and valor_inss <= 0:
+                if exp_inss_bool is True and is_effectively_zero(valor_inss, MONETARY_TOLERANCE):
                     alertas.append(
                         f"Optante Simples: INSS esperado (Anexo IV=SIM) para código {codigo_norm}, mas veio 0.00."
                     )
-                elif exp_inss_bool is False and valor_inss > 0:
+                elif exp_inss_bool is False and not is_effectively_zero(valor_inss, MONETARY_TOLERANCE):
                     alertas.append(
                         f"Optante Simples: INSS não esperado (Anexo IV=NÃO) para código {codigo_norm}, mas veio {valor_inss:.2f}."
                     )
-                elif exp_inss_flag == 'DEPENDE' and valor_inss > 0:
+                elif exp_inss_flag == 'DEPENDE' and not is_effectively_zero(valor_inss, MONETARY_TOLERANCE):
                     alertas.append(
                         f"Optante Simples: INSS na planilha = DEPENDE para código {codigo_norm}. Revisar regra/observação."
                     )
@@ -407,23 +413,23 @@ class NFSeXMLConverter:
         if exp_irrf_percent is not None:
             valor_esperado = base_calculo * (float(exp_irrf_percent) / 100.0)
             if float(exp_irrf_percent) == 0.0:
-                if valor_irrf != 0 or tem_irrf_retido:
+                if not is_effectively_zero(valor_irrf, MONETARY_TOLERANCE) or tem_irrf_retido:
                     alertas.append(
                         f"IRRF não deve ser retido para código {codigo_norm}. Valor encontrado: {valor_irrf:.2f}"
                     )
             else:
                 # se tem retenção, compara valor; se não tem e esperado>0, alerta
-                if valor_irrf > 0 or tem_irrf_retido:
-                    if abs(valor_irrf - valor_esperado) > 0.01:
+                if not is_effectively_zero(valor_irrf, MONETARY_TOLERANCE) or tem_irrf_retido:
+                    if has_material_monetary_difference(valor_irrf, valor_esperado, MONETARY_TOLERANCE):
                         alertas.append(
                             f"IRRF retido divergente para código {codigo_norm}. Esperado: {valor_esperado:.2f} ({exp_irrf_percent}%). Encontrado: {valor_irrf:.2f}"
                         )
                 else:
-                    if valor_esperado > 0.01:
+                    if not is_effectively_zero(valor_esperado, MONETARY_TOLERANCE):
                         alertas.append(
                             f"IRRF devido e não retido para código {codigo_norm}. Deveria ser: {valor_esperado:.2f} ({exp_irrf_percent}%)"
                         )
-        elif exp_irrf_flag == 'DEPENDE' and (valor_irrf > 0 or tem_irrf_retido):
+        elif exp_irrf_flag == 'DEPENDE' and (not is_effectively_zero(valor_irrf, MONETARY_TOLERANCE) or tem_irrf_retido):
             alertas.append(
                 f"IRRF na planilha = DEPENDE para código {codigo_norm}. Revisar regra/observação."
             )
@@ -432,36 +438,36 @@ class NFSeXMLConverter:
         if exp_csrf_percent is not None:
             valor_esperado = base_calculo * (float(exp_csrf_percent) / 100.0)
             if float(exp_csrf_percent) == 0.0:
-                if valor_csrf != 0 or (tipo_retencao_csrf and str(tipo_retencao_csrf).strip()):
+                if not is_effectively_zero(valor_csrf, MONETARY_TOLERANCE) or (tipo_retencao_csrf and str(tipo_retencao_csrf).strip()):
                     alertas.append(
                         f"CSRF não deve ser retido para código {codigo_norm}. Valor encontrado: {valor_csrf:.2f}"
                     )
             else:
-                if valor_csrf > 0 or (tipo_retencao_csrf and str(tipo_retencao_csrf).strip()):
-                    if abs(valor_csrf - valor_esperado) > 0.01:
+                if not is_effectively_zero(valor_csrf, MONETARY_TOLERANCE) or (tipo_retencao_csrf and str(tipo_retencao_csrf).strip()):
+                    if has_material_monetary_difference(valor_csrf, valor_esperado, MONETARY_TOLERANCE):
                         alertas.append(
                             f"CSRF retido divergente para código {codigo_norm}. Esperado: {valor_esperado:.2f} ({exp_csrf_percent}%). Encontrado: {valor_csrf:.2f}"
                         )
                 else:
-                    if valor_esperado > 0.01:
+                    if not is_effectively_zero(valor_esperado, MONETARY_TOLERANCE):
                         alertas.append(
                             f"CSRF devido e não retido para código {codigo_norm}. Deveria ser: {valor_esperado:.2f} ({exp_csrf_percent}%)"
                         )
-        elif exp_csrf_flag == 'DEPENDE' and (valor_csrf > 0 or (tipo_retencao_csrf and str(tipo_retencao_csrf).strip())):
+        elif exp_csrf_flag == 'DEPENDE' and (not is_effectively_zero(valor_csrf, MONETARY_TOLERANCE) or (tipo_retencao_csrf and str(tipo_retencao_csrf).strip())):
             alertas.append(
                 f"CSRF na planilha = DEPENDE para código {codigo_norm}. Revisar regra/observação."
             )
 
         # INSS (planilha só diz SIM/NÃO/DEPENDE; não calcula %)
-        if exp_inss_bool is True and valor_inss <= 0:
+        if exp_inss_bool is True and is_effectively_zero(valor_inss, MONETARY_TOLERANCE):
             alertas.append(
                 f"INSS esperado (planilha=SIM) para código {codigo_norm}, mas veio 0.00."
             )
-        elif exp_inss_bool is False and valor_inss > 0:
+        elif exp_inss_bool is False and not is_effectively_zero(valor_inss, MONETARY_TOLERANCE):
             alertas.append(
                 f"INSS não esperado (planilha=NÃO) para código {codigo_norm}, mas veio {valor_inss:.2f}."
             )
-        elif exp_inss_flag == 'DEPENDE' and valor_inss > 0:
+        elif exp_inss_flag == 'DEPENDE' and not is_effectively_zero(valor_inss, MONETARY_TOLERANCE):
             alertas.append(
                 f"INSS na planilha = DEPENDE para código {codigo_norm}. Revisar regra/observação."
             )
@@ -915,11 +921,11 @@ class NFSeXMLConverter:
                 
                 # Identifica quais impostos têm valores
                 impostos_retidos = []
-                if valor_csrf > 0:
+                if not is_effectively_zero(valor_csrf, MONETARY_TOLERANCE):
                     impostos_retidos.append(f"CSRF ({valor_csrf:.2f})")
-                if valor_irrf > 0:
+                if not is_effectively_zero(valor_irrf, MONETARY_TOLERANCE):
                     impostos_retidos.append(f"IRRF ({valor_irrf:.2f})")
-                if valor_inss > 0:
+                if not is_effectively_zero(valor_inss, MONETARY_TOLERANCE):
                     impostos_retidos.append(f"INSS ({valor_inss:.2f})")
                 if valor_iss > 0:
                     impostos_retidos.append(f"ISS ({valor_iss:.2f})")
@@ -954,16 +960,16 @@ class NFSeXMLConverter:
                     alertas_fiscais = alerta_optante
             else:
                 # Caso 2: IRRF ou CSRF > 0 → DIVERGENTE para esses impostos
-                if valor_irrf > 0:
+                if not is_effectively_zero(valor_irrf, MONETARY_TOLERANCE):
                     status_irrf = "Divergente"
-                if valor_csrf > 0:
+                if not is_effectively_zero(valor_csrf, MONETARY_TOLERANCE):
                     status_csrf = "Divergente"
                 
                 # Identifica quais impostos têm valores
                 impostos_retidos = []
-                if valor_csrf > 0:
+                if not is_effectively_zero(valor_csrf, MONETARY_TOLERANCE):
                     impostos_retidos.append(f"CSRF ({valor_csrf:.2f})")
-                if valor_irrf > 0:
+                if not is_effectively_zero(valor_irrf, MONETARY_TOLERANCE):
                     impostos_retidos.append(f"IRRF ({valor_irrf:.2f})")
                 
                 # Adiciona alerta de divergência específico

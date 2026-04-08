@@ -162,6 +162,7 @@ class NotaReportRow(BaseModel):
     csrf_calculado: Optional[float] = None
     iss_calculado: Optional[float] = None
     status: Optional[str] = None
+    status_nota: Optional[str] = None
     status_fila: Optional[str] = None
     incidencia_iss: Optional[str] = None
     codigo_servico: Optional[str] = None

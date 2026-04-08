@@ -21,11 +21,13 @@ SHEET_DIVERGENTES = "Notas Divergentes"
 SHEET_CORRETAS = "Notas Corretas"
 
 DIA_PROCESSADO_COL = "dia processado"
+STATUS_NOTA_COL = "Status nota"
 STATUS_FILA_COL = "Status"
 DIVERGENCIA_FILA_COL = "Divergência"
 PRIORIDADE_FILA_COL = "Prioridade"
 RESPONSAVEL_FILA_COL = "Responsável"
 FILA_EXPORT_COLS = [
+    STATUS_NOTA_COL,
     STATUS_FILA_COL,
     DIVERGENCIA_FILA_COL,
     PRIORIDADE_FILA_COL,
@@ -172,29 +174,40 @@ def _today_sp() -> str:
 
 def _build_queue_export_values(row: dict, db_row: Optional[dict] = None) -> dict[str, str]:
     source = db_row or {}
-    status = (
-        source.get("status_fila_final")
-        or row.get(STATUS_FILA_COL)
+    status_nota = (
+        source.get("status_nota")
+        or source.get("status_fila_final")
+        or row.get(STATUS_NOTA_COL)
+        or row.get("status_nota")
         or row.get("status_fila_final")
         or row.get("status_fila")
+        or row.get("status")
         or compute_final_queue_status(
             {
                 "status_fila_manual": row.get("status_fila_manual"),
                 "status_csrf": row.get("Status CSRF"),
                 "status_irrf": row.get("Status IRRF"),
                 "status_inss": row.get("Status INSS"),
-                "status_base_calculo": row.get("Status Base de Cálculo"),
-                "status_valor_liquido": row.get("Status Valor Líquido"),
+                "status_base_calculo": row.get("Status Base de C\u00e1lculo") or row.get("Status Base de C\u00c3\u00a1lculo"),
+                "status_valor_liquido": row.get("Status Valor L\u00edquido") or row.get("Status Valor L\u00c3\u00adquido"),
                 "alertas_fiscais": row.get("Alertas Fiscais"),
                 "observacao_interna": row.get("observacao_interna"),
             }
         )
     )
+    status = (
+        source.get("status_fila_final")
+        or row.get(STATUS_FILA_COL)
+        or row.get("status_fila_final")
+        or row.get("status_nota")
+        or row.get("status_fila")
+        or status_nota
+    )
     divergencia = (
         source.get("divergencia_fila_label")
         or row.get(DIVERGENCIA_FILA_COL)
         or row.get("divergencia_fila_label")
-        or ("Com divergência" if str(status).strip().lower() == "divergente" else "Sem divergência")
+        or ("Com diverg\u00eancia" if str(status).strip().lower() == "divergente" else "Sem diverg\u00eancia")
     )
     prioridade = (
         source.get("prioridade_manual")
@@ -210,12 +223,12 @@ def _build_queue_export_values(row: dict, db_row: Optional[dict] = None) -> dict
         or ""
     )
     return {
+        STATUS_NOTA_COL: status_nota,
         STATUS_FILA_COL: status,
         DIVERGENCIA_FILA_COL: divergencia,
         PRIORIDADE_FILA_COL: prioridade,
         RESPONSAVEL_FILA_COL: responsavel,
     }
-
 
 def _fetch_queue_state_map(cert_alias: Optional[str], keys: list[str]) -> dict[str, dict]:
     clean_keys = [str(k).strip() for k in keys if str(k or "").strip()]
@@ -225,6 +238,7 @@ def _fetch_queue_state_map(cert_alias: Optional[str], keys: list[str]) -> dict[s
         rows = conn.execute(
             f"""
             SELECT n.chave_nfse,
+                   {STATUS_FILA_EXPR} as status_nota,
                    {STATUS_FILA_EXPR} as status_fila_final,
                    {STATUS_FILA_LABEL_EXPR} as divergencia_fila_label,
                    n.prioridade_manual,

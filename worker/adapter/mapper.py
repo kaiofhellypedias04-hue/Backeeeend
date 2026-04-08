@@ -72,6 +72,16 @@ class Mapper:
             runner_payload.temp_base = temp_base  # Temp extension (subproc-ready)
             
             logger.info('Mapping complete', {'executionId': payload.executionId})
+            logger.info(
+                'Chunk settings mapped',
+                {
+                    'executionId': payload.executionId,
+                    'useChunkDays': bool(payload.useChunkDays),
+                    'chunkDays': payload.chunkDays,
+                    'runner_use_chunk_days': runner_payload.use_chunk_days,
+                    'runner_chunk_days': runner_payload.chunk_days,
+                },
+            )
             return runner_payload
             
         except ValidationError as e:

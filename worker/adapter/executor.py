@@ -30,6 +30,16 @@ class Executor:
         try:
             # Parse API input
             api_payload = APIInputPayload(**input_payload)
+            logger.info(
+                'Chunk settings received',
+                {
+                    'executionId': execution_id,
+                    'useChunkDays': api_payload.useChunkDays,
+                    'chunkDays': api_payload.chunkDays,
+                    'startDate': api_payload.startDate,
+                    'endDate': api_payload.endDate,
+                },
+            )
             
             # Map → RunnerPayload
             runner_payload = self.mapper.api_to_runner(api_payload, logger)

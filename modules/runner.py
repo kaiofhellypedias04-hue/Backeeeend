@@ -176,6 +176,25 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
         print(f"Quantidade de chunks gerados: {len(chunks)}")
         for idx_chunk, (chunk_start, chunk_end) in enumerate(chunks, start=1):
             print(f"  Chunk {idx_chunk}/{len(chunks)}: {chunk_start.isoformat()} -> {chunk_end.isoformat()}")
+        logger.info(
+            "Chunks resolvidos para processamento",
+            {
+                "cert_alias": cert_alias,
+                "periodo_total": f"{start.isoformat()}..{end.isoformat()}",
+                "use_chunk_days": chunk_enabled,
+                "chunk_days_recebido": getattr(cfg, "chunk_days", None),
+                "chunk_days_efetivo": chunk_days_valid,
+                "total_chunks": len(chunks),
+                "chunks": [
+                    {
+                        "index": idx_chunk,
+                        "start": chunk_start.isoformat(),
+                        "end": chunk_end.isoformat(),
+                    }
+                    for idx_chunk, (chunk_start, chunk_end) in enumerate(chunks, start=1)
+                ],
+            },
+        )
 
         upsert_state(cert_alias, status="running", last_error=None)
         last_ok_date: date | None = None
@@ -362,6 +381,20 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                 os.makedirs(tmp_dir, exist_ok=True)
                 resultado_cert["tmp_dir"] = tmp_dir
 
+                logger.info(
+                    "Periodo efetivo enviado ao Playwright",
+                    {
+                        "cert_alias": cert_alias,
+                        "chunk_index": idx_chunk,
+                        "chunk_total": len(chunks),
+                        "start": chunk_start.isoformat(),
+                        "end": chunk_end.isoformat(),
+                        "start_br": _date_to_br(chunk_start),
+                        "end_br": _date_to_br(chunk_end),
+                        "use_chunk_days": chunk_enabled,
+                        "chunk_days_efetivo": chunk_days_valid,
+                    },
+                )
                 ok, total_xmls, need_to_split, error_msg = executar_fluxo_nfse_playwright(
                     cert_alias=cert_alias,
                     data_inicial=_date_to_br(chunk_start),

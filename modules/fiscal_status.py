@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import unicodedata
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Iterable
 
 
+MONETARY_TOLERANCE = 0.01
+NOTE_STATUS_VALUES = ("cancelada", "pendente", "divergente", "substituida", "correta")
 OK_VALUES = {"", "ok", "correto", "sem divergencia", "sem divergência"}
 DIVERGENT_VALUES = {"divergente", "ausente", "erro", "inconsistente"}
 
@@ -20,6 +23,56 @@ def normalize_status_value(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip().lower()
+
+
+def normalize_text_for_suffix_match(value: Any) -> str:
+    txt = str(value or "").strip().lower()
+    txt = " ".join(txt.split())
+    txt = unicodedata.normalize("NFD", txt)
+    txt = "".join(ch for ch in txt if unicodedata.category(ch) != "Mn")
+    return txt
+
+
+def normalize_note_status_value(value: Any) -> str:
+    normalized = normalize_text_for_suffix_match(value).replace("-", " ").replace("_", " ")
+    normalized = " ".join(normalized.split())
+    aliases = {
+        "cancelada": "cancelada",
+        "cancelado": "cancelada",
+        "pendente": "pendente",
+        "divergente": "divergente",
+        "substituida": "substituida",
+        "substituido": "substituida",
+        "correta": "correta",
+        "correto": "correta",
+        "ok": "correta",
+    }
+    return aliases.get(normalized, "")
+
+
+def resolve_manual_note_status(value: Any) -> str:
+    return normalize_note_status_value(value)
+
+
+def is_effectively_zero(value: float | None, tolerance: float = MONETARY_TOLERANCE) -> bool:
+    if value is None:
+        return False
+    return _quantize_money(abs(float(value))) <= _quantize_money(tolerance)
+
+
+def has_material_monetary_difference(
+    found_value: float | None,
+    expected_value: float | None,
+    tolerance: float = MONETARY_TOLERANCE,
+) -> bool:
+    if found_value is None or expected_value is None:
+        return False
+    difference = _quantize_money(abs(float(found_value) - float(expected_value)))
+    return difference > _quantize_money(tolerance)
+
+
+def _quantize_money(value: float | int) -> Decimal:
+    return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def is_divergent_status_value(value: Any) -> bool:
@@ -64,10 +117,8 @@ def resolve_effective_tax_regime(simples_xml: Any = None, consulta_simples_api: 
     xml_regime = _classify_tax_regime(simples_xml)
     api_regime = _classify_tax_regime(consulta_simples_api)
 
-    # A API tem precedência quando informa "não optante".
     if api_regime == "NAO_OPTANTE":
         return api_regime
-    # Mantém MEI como caso especial, inclusive quando a API vier apenas como "optante".
     if api_regime == "MEI" or xml_regime == "MEI":
         return "MEI"
     if api_regime:
@@ -78,7 +129,7 @@ def resolve_effective_tax_regime(simples_xml: Any = None, consulta_simples_api: 
 def build_base_calculation_alert(
     valor_bc: float | None,
     valor_total: float | None,
-    tolerance: float = 0.01,
+    tolerance: float = MONETARY_TOLERANCE,
     *,
     simples_xml: Any = None,
     consulta_simples_api: Any = None,
@@ -103,7 +154,7 @@ def build_base_calculation_alert(
 def compute_base_calculation_status(
     valor_bc: float | None,
     valor_total: float | None,
-    tolerance: float = 0.01,
+    tolerance: float = MONETARY_TOLERANCE,
     *,
     simples_xml: Any = None,
     consulta_simples_api: Any = None,
@@ -123,14 +174,6 @@ def compute_base_calculation_status(
         if regime in {"OPTANTE", "NAO_OPTANTE"}:
             return "divergente"
     return "ok"
-
-
-def normalize_text_for_suffix_match(value: Any) -> str:
-    txt = str(value or "").strip().lower()
-    txt = " ".join(txt.split())
-    txt = unicodedata.normalize("NFD", txt)
-    txt = "".join(ch for ch in txt if unicodedata.category(ch) != "Mn")
-    return txt
 
 
 def _last_non_empty_pipe_segment(value: Any) -> str:
@@ -179,7 +222,7 @@ def is_observacao_fiscal_final_segment_correto(observacao_fiscal: Any) -> bool:
 
 
 def compute_final_queue_status(payload: dict[str, Any], fields: Iterable[str] = FINAL_STATUS_FIELDS) -> str:
-    manual = normalize_status_value(payload.get("status_fila_manual"))
+    manual = resolve_manual_note_status(payload.get("status_fila_manual"))
     if manual:
         return manual
     observacao_norm = normalize_text_for_suffix_match(payload.get("observacao_interna"))
@@ -230,7 +273,7 @@ def build_sql_alertas_final_segment_correto_expr(alias: str = "n") -> str:
         "REGEXP_REPLACE("
         "TRANSLATE("
         f"COALESCE({last_segment_expr}, ''), "
-        "'ÃÃ€Ã‚ÃƒÃ„Ã¡Ã Ã¢Ã£Ã¤Ã‰ÃˆÃŠÃ‹Ã©Ã¨ÃªÃ«ÃÃŒÃŽÃÃ­Ã¬Ã®Ã¯Ã“Ã’Ã”Ã•Ã–Ã³Ã²Ã´ÃµÃ¶ÃšÃ™Ã›ÃœÃºÃ¹Ã»Ã¼Ã‡Ã§', "
+        "'ÁÀÂÃÄáàâãäÉÈÊËéèêëÍÌÎÏíìîïÓÒÔÕÖóòôõöÚÙÛÜúùûüÇç', "
         "'AAAAAaaaaaEEEEeeeeIIIIiiiiOOOOOoooooUUUUuuuuCc'"
         "), "
         "'\\s+', ' ', 'g'"
@@ -242,7 +285,17 @@ def build_sql_alertas_final_segment_correto_expr(alias: str = "n") -> str:
 
 def build_sql_queue_status_expr(alias: str = "n", note_status_expr: str | None = None) -> str:
     note_expr = note_status_expr or build_sql_status_expr(alias)
-    manual_expr = f"NULLIF(BTRIM({alias}.status_fila_manual), '')"
+    manual_raw_expr = f"LOWER(BTRIM(COALESCE({alias}.status_fila_manual, '')))"
+    manual_expr = f"""(
+        CASE
+          WHEN {manual_raw_expr} IN ('cancelada', 'cancelado') THEN 'cancelada'
+          WHEN {manual_raw_expr} = 'pendente' THEN 'pendente'
+          WHEN {manual_raw_expr} = 'divergente' THEN 'divergente'
+          WHEN {manual_raw_expr} IN ('substituida', 'substituída', 'substituido', 'substituído') THEN 'substituida'
+          WHEN {manual_raw_expr} IN ('correta', 'correto', 'ok') THEN 'correta'
+          ELSE NULL
+        END
+    )"""
     observacao_diverg_expr = f"LOWER(COALESCE({alias}.observacao_interna, '')) LIKE '%%diverg%%'"
     alertas_diverg_expr = (
         f"LOWER(COALESCE({alias}.alertas_fiscais, '')) LIKE '%%base zerada:%%' "
