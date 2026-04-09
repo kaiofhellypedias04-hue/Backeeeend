@@ -1,30 +1,35 @@
 from __future__ import annotations
 
-import shutil
 import logging
-from pathlib import Path
-from typing import Optional, Any
-from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+import shutil
+import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
+
+from .arquivos_repo import garantir_schema_nfse_processo_arquivos
+from .db import get_conn
+from .execucoes_repo import atualizar_status_execucao, garantir_schema_nfse_execucoes
+from .notas_repo import obter_resumo_processo, garantir_schema_nfse_notas
+from .processos_repo import atualizar_status_processo, atualizar_totais_processo, garantir_schema_nfse_processos
+from .runner import RunConfig, run_processing as run_processing_without_process
+from .schemas import StatusEnum
+from .storage import (
+    build_process_storage_key,
+    is_s3_configured,
+    upload_pdf,
+    upload_relatorio,
+    upload_xml,
+)
 
 logger_cleanup = logging.getLogger("cleanup")
 
-from .runner import RunConfig, run_processing as run_processing_without_process
-from .processos_repo import atualizar_status_processo, atualizar_totais_processo, garantir_schema_nfse_processos
-from .execucoes_repo import atualizar_status_execucao, garantir_schema_nfse_execucoes
-from .arquivos_repo import garantir_schema_nfse_processo_arquivos
-from .storage import (
-    build_process_storage_key,
-    upload_pdf,
-    upload_xml,
-    upload_relatorio,
-    is_s3_configured,
-)
-from .notas_repo import obter_resumo_processo, garantir_schema_nfse_notas
-from .schemas import StatusEnum
-from .db import get_conn
+_process_run_gate = threading.Lock()
+_process_run_gate_state = threading.Condition()
+_process_run_waiting = 0
 
 
 @dataclass
@@ -44,35 +49,32 @@ def run_processing(cfg: RunConfig, logger=None, execution_id: Optional[str] = No
         return run_processing_without_process(cfg, logger)
 
 
-def run_with_process(cfg: ProcessRunConfig, logger=None):
+def _run_with_process_inner(cfg: ProcessRunConfig, logger=None):
     garantir_schema_nfse_processos()
     garantir_schema_nfse_execucoes()
     garantir_schema_nfse_processo_arquivos()
     garantir_schema_nfse_notas()
 
     atualizar_status_processo(cfg.processo_id, StatusEnum.running, datetime.now())
-    atualizar_status_execucao(cfg.execution_id, 'running', datetime.now())
+    atualizar_status_execucao(cfg.execution_id, "running", datetime.now())
 
     try:
-        # Executa lógica principal e recebe resultados detalhados desta execução.
         resultados_execucao = run_processing_without_process(cfg, logger)
 
         if not resultados_execucao:
-            raise RuntimeError("A execução não retornou resultados por certificado.")
+            raise RuntimeError("A execucao nao retornou resultados por certificado.")
 
-        erros = [r for r in resultados_execucao if r.get('status') == 'error']
+        erros = [r for r in resultados_execucao if r.get("status") == "error"]
         if erros:
-            primeiro_erro = erros[0].get('error') or 'Falha na execução'
+            primeiro_erro = erros[0].get("error") or "Falha na execucao"
             raise RuntimeError(primeiro_erro)
 
-        # Registra SOMENTE os arquivos desta execução/processo.
         num_xml, num_pdf, num_relatorio, total_registrados = register_process_files(cfg, resultados_execucao)
 
-        # Recalcula resumo após persistência e registro.
         resumo = obter_resumo_processo(cfg.processo_id)
-        total_notas = resumo.get('total_notas', 0)
-        total_corretas = resumo.get('total_corretas', 0)
-        total_divergentes = resumo.get('total_divergentes', 0)
+        total_notas = resumo.get("total_notas", 0)
+        total_corretas = resumo.get("total_corretas", 0)
+        total_divergentes = resumo.get("total_divergentes", 0)
 
         atualizar_totais_processo(
             cfg.processo_id,
@@ -83,13 +85,11 @@ def run_with_process(cfg: ProcessRunConfig, logger=None):
             total_divergentes,
         )
 
-        # Validação de integridade: não concluir com XML(s) e zero nota(s).
         if num_xml > 0 and total_notas <= 0:
             raise RuntimeError(
                 f"Processo {cfg.processo_id} possui {num_xml} XML(s) registrado(s), mas 0 notas persistidas/vinculadas."
             )
 
-        # Se houve arquivos registrados, mas zero total, também consideramos inconsistente.
         if total_registrados > 0 and total_notas <= 0:
             raise RuntimeError(
                 f"Processo {cfg.processo_id} registrou {total_registrados} arquivo(s), mas 0 notas persistidas/vinculadas."
@@ -98,19 +98,18 @@ def run_with_process(cfg: ProcessRunConfig, logger=None):
         resultado_cleanup = limpar_pasta_local(cfg)
         if resultado_cleanup.get("limpo"):
             logger_cleanup.info(
-                f"[Cleanup] Processo {cfg.processo_id} — pasta local removida. "
+                f"[Cleanup] Processo {cfg.processo_id} - pasta local removida. "
                 f"Arquivos: {resultado_cleanup.get('arquivos_confirmados')}. "
                 f"Pastas: {resultado_cleanup.get('pastas_removidas')}"
             )
         else:
             logger_cleanup.warning(
-                f"[Cleanup] Processo {cfg.processo_id} — pasta local mantida. "
+                f"[Cleanup] Processo {cfg.processo_id} - pasta local mantida. "
                 f"Motivo: {resultado_cleanup.get('motivo')}"
             )
 
         atualizar_status_processo(cfg.processo_id, StatusEnum.completed, finished_at=datetime.now())
-        atualizar_status_execucao(cfg.execution_id, 'completed', finished_at=datetime.now())
-
+        atualizar_status_execucao(cfg.execution_id, "completed", finished_at=datetime.now())
         return resultados_execucao
 
     except Exception as e:
@@ -125,7 +124,7 @@ def run_with_process(cfg: ProcessRunConfig, logger=None):
         )
         atualizar_status_execucao(
             cfg.execution_id,
-            'failed',
+            "failed",
             finished_at=datetime.now(),
             error=error_message,
             traceback=traceback.format_exc(),
@@ -133,9 +132,45 @@ def run_with_process(cfg: ProcessRunConfig, logger=None):
         raise RuntimeError(error_message) from e
 
 
+def run_with_process(cfg: ProcessRunConfig, logger=None):
+    global _process_run_waiting
+
+    aliases = ", ".join(cfg.cert_aliases or [])
+    with _process_run_gate_state:
+        waiting_ahead = _process_run_waiting
+        _process_run_waiting += 1
+
+    logger_cleanup.info(
+        "[ExecGate] Processo %s aguardando slot global. aliases=[%s] aguardando_antes=%s",
+        cfg.processo_id,
+        aliases,
+        waiting_ahead,
+    )
+
+    with _process_run_gate:
+        with _process_run_gate_state:
+            _process_run_waiting = max(0, _process_run_waiting - 1)
+            waiting_now = _process_run_waiting
+
+        logger_cleanup.info(
+            "[ExecGate] Processo %s iniciou no slot global. aliases=[%s] aguardando_restante=%s",
+            cfg.processo_id,
+            aliases,
+            waiting_now,
+        )
+
+        try:
+            resultado = _run_with_process_inner(cfg, logger)
+            logger_cleanup.info("[ExecGate] Processo %s liberando slot global com sucesso.", cfg.processo_id)
+            return resultado
+        except Exception:
+            logger_cleanup.info("[ExecGate] Processo %s liberando slot global com falha.", cfg.processo_id)
+            raise
+
+
 def _apenas_upload(tarefa: dict) -> dict:
     """
-    Faz SOMENTE o upload para o MinIO — sem tocar no banco.
+    Faz SOMENTE o upload para o MinIO - sem tocar no banco.
     Executado em thread paralela. Retorna dict com resultado + storage_key.
     """
     tipo_map = {
@@ -171,39 +206,41 @@ def _coletar_arquivos_da_execucao(cfg: RunConfig, resultados_execucao: list[dict
             return
         vistos.add(chave_visto)
         storage_key = build_process_storage_key(tipo, cfg.processo_id, p.name)
-        tarefas.append({
-            "tipo": tipo,
-            "path": p,
-            "storage_key": storage_key,
-            "processo_id": cfg.processo_id,
-        })
+        tarefas.append(
+            {
+                "tipo": tipo,
+                "path": p,
+                "storage_key": storage_key,
+                "processo_id": cfg.processo_id,
+            }
+        )
 
     for resultado in resultados_execucao:
-        processamento = resultado.get('processamento') or {}
-        for path in processamento.get('xml_paths') or []:
-            _add_file('xml', path)
-        for path in processamento.get('pdf_paths') or []:
-            _add_file('pdf', path)
-        for path in processamento.get('planilha_paths') or []:
-            _add_file('relatorio', path)
-        for chunk in resultado.get('chunks') or []:
-            processamento_chunk = chunk.get('processamento') or {}
-            for path in processamento_chunk.get('xml_paths') or []:
-                _add_file('xml', path)
-            for path in processamento_chunk.get('pdf_paths') or []:
-                _add_file('pdf', path)
-            for path in processamento_chunk.get('planilha_paths') or []:
-                _add_file('relatorio', path)
+        processamento = resultado.get("processamento") or {}
+        for path in processamento.get("xml_paths") or []:
+            _add_file("xml", path)
+        for path in processamento.get("pdf_paths") or []:
+            _add_file("pdf", path)
+        for path in processamento.get("planilha_paths") or []:
+            _add_file("relatorio", path)
+        for chunk in resultado.get("chunks") or []:
+            processamento_chunk = chunk.get("processamento") or {}
+            for path in processamento_chunk.get("xml_paths") or []:
+                _add_file("xml", path)
+            for path in processamento_chunk.get("pdf_paths") or []:
+                _add_file("pdf", path)
+            for path in processamento_chunk.get("planilha_paths") or []:
+                _add_file("relatorio", path)
 
     return tarefas
 
 
 def register_process_files(cfg: RunConfig, resultados_execucao: list[dict[str, Any]]) -> tuple[int, int, int, int]:
     """
-    Registra SOMENTE arquivos desta execução:
+    Registra SOMENTE arquivos desta execucao:
     1. Coleta caminhos devolvidos pelo runner
     2. Faz upload em paralelo pro MinIO (sem DB)
-    3. Registra tudo no banco em uma única conexão
+    3. Registra tudo no banco em uma unica conexao
 
     Retorna (xml_count, pdf_count, relatorio_count, total_registrados).
     """
@@ -218,7 +255,7 @@ def register_process_files(cfg: RunConfig, resultados_execucao: list[dict[str, A
         return 0, 0, 0, 0
 
     max_workers = min(20, len(tarefas))
-    logger_cleanup.info(f"[Upload] {len(tarefas)} arquivos desta execução → MinIO com {max_workers} threads...")
+    logger_cleanup.info(f"[Upload] {len(tarefas)} arquivos desta execucao -> MinIO com {max_workers} threads...")
 
     resultados = []
     erros = []
@@ -249,7 +286,7 @@ def register_process_files(cfg: RunConfig, resultados_execucao: list[dict[str, A
 
     with get_conn() as conn:
         for res in resultados:
-            if not res.get('ok') or not res.get('storage_key'):
+            if not res.get("ok") or not res.get("storage_key"):
                 raise RuntimeError(f"Arquivo sem storage_key confirmado: {res.get('nome')}")
             try:
                 conn.execute(
@@ -282,7 +319,7 @@ def register_process_files(cfg: RunConfig, resultados_execucao: list[dict[str, A
                 raise
 
     logger_cleanup.info(
-        f"[Upload] Concluído: {pdf_count} PDFs + {xml_count} XMLs + {relatorio_count} relatório(s) registrados no banco"
+        f"[Upload] Concluido: {pdf_count} PDFs + {xml_count} XMLs + {relatorio_count} relatorio(s) registrados no banco"
     )
     return xml_count, pdf_count, relatorio_count, total_registrados
 
@@ -296,7 +333,7 @@ def limpar_pasta_local(cfg: RunConfig) -> dict:
     Retorna um dict com o resultado da limpeza.
     """
     if not is_s3_configured():
-        logger_cleanup.info("[Cleanup] MinIO não configurado — pasta local mantida.")
+        logger_cleanup.info("[Cleanup] MinIO nao configurado - pasta local mantida.")
         return {"limpo": False, "motivo": "minio_nao_configurado"}
 
     try:
@@ -317,12 +354,12 @@ def limpar_pasta_local(cfg: RunConfig) -> dict:
         return {"limpo": False, "motivo": f"erro_banco: {e}"}
 
     if total == 0:
-        logger_cleanup.info("[Cleanup] Nenhum arquivo registrado — pasta local mantida.")
+        logger_cleanup.info("[Cleanup] Nenhum arquivo registrado - pasta local mantida.")
         return {"limpo": False, "motivo": "sem_arquivos"}
 
     if enviados < total:
         logger_cleanup.warning(
-            f"[Cleanup] Apenas {enviados}/{total} arquivos enviados ao MinIO. Pasta local NÃO será apagada."
+            f"[Cleanup] Apenas {enviados}/{total} arquivos enviados ao MinIO. Pasta local NAO sera apagada."
         )
         return {"limpo": False, "motivo": f"upload_incompleto_{enviados}/{total}"}
 
@@ -345,5 +382,6 @@ def limpar_pasta_local(cfg: RunConfig) -> dict:
         "erros": erros,
         "arquivos_confirmados": f"{enviados}/{total}",
     }
+
 
 # Note: run_processing_without_process is original run_processing renamed after refactor

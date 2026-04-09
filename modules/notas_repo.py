@@ -27,6 +27,10 @@ STATUS_FILA_FILTER_EXPR = f"LOWER(BTRIM(COALESCE({STATUS_FILA_EXPR}, '')))"
 STATUS_FILA_DIVERGENCIA_EXPR = (
     f"CASE WHEN LOWER(BTRIM(COALESCE({STATUS_FILA_EXPR}, ''))) = 'divergente' THEN TRUE ELSE FALSE END"
 )
+PRIORIDADE_MANUAL_FILTER_EXPR = "LOWER(BTRIM(COALESCE(n.prioridade_manual, '')))"
+RESPONSAVEL_FILTER_EXPR = "LOWER(BTRIM(COALESCE(n.responsavel, '')))"
+STATUS_FILA_MANUAL_FILTER_EXPR = "LOWER(BTRIM(COALESCE(n.status_fila_manual, '')))"
+CERT_ALIAS_FILTER_EXPR = "NULLIF(BTRIM(COALESCE(n.cert_alias, '')), '')"
 STATUS_FILA_LABEL_EXPR = (
     f"CASE WHEN {STATUS_FILA_DIVERGENCIA_EXPR} THEN 'Com divergência' ELSE 'Sem divergência' END"
 )
@@ -340,6 +344,13 @@ def _extract_total(total_row: Any) -> int:
         return int(dict(total_row).get("total", 0) or 0)
     except Exception:
         return 0
+
+
+def _normalize_text_filter(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    txt = str(value).strip()
+    return txt.lower() if txt else None
 
 
 def _to_decimal(v: Any) -> Optional[float]:
@@ -702,6 +713,26 @@ def _build_where(filters: Optional[dict], processo_id: Optional[str] = None) -> 
             where_clauses.append("n.cert_alias = %s")
             params.append(cert_alias)
 
+        status_fila = _normalize_text_filter(filters.get("status_fila"))
+        if status_fila:
+            where_clauses.append(f"{STATUS_FILA_FILTER_EXPR} = %s")
+            params.append(status_fila)
+
+        status_fila_manual = _normalize_text_filter(filters.get("status_fila_manual"))
+        if status_fila_manual:
+            where_clauses.append(f"{STATUS_FILA_MANUAL_FILTER_EXPR} = %s")
+            params.append(status_fila_manual)
+
+        prioridade_manual = _normalize_text_filter(filters.get("prioridade_manual"))
+        if prioridade_manual:
+            where_clauses.append(f"{PRIORIDADE_MANUAL_FILTER_EXPR} = %s")
+            params.append(prioridade_manual)
+
+        responsavel = _normalize_text_filter(filters.get("responsavel"))
+        if responsavel:
+            where_clauses.append(f"{RESPONSAVEL_FILTER_EXPR} = %s")
+            params.append(responsavel)
+
         if filters.get("somente_divergentes"):
             where_clauses.append(f"{STATUS_FILA_FILTER_EXPR} = 'divergente'")
 
@@ -881,6 +912,57 @@ def listar_notas_agrupadas(filters: Optional[dict] = None, page: int = 1, page_s
         ).fetchone()
 
     return [dict(r) for r in rows], _extract_total(total_row)
+
+
+def listar_empresas_e_contadores_fila(filters: Optional[dict] = None) -> Dict[str, Any]:
+    where, params = _build_where(filters)
+    prioridade_expr = PRIORIDADE_MANUAL_FILTER_EXPR
+    company_where = f"{where} {'AND' if where else 'WHERE'} {CERT_ALIAS_FILTER_EXPR} IS NOT NULL"
+
+    with get_conn() as conn:
+        empresas_rows = conn.execute(
+            f"""
+            SELECT DISTINCT n.cert_alias
+            FROM nfse_notas n
+            {company_where}
+            ORDER BY n.cert_alias ASC
+            """,
+            params,
+        ).fetchall()
+
+        contadores_row = conn.execute(
+            f"""
+            SELECT
+                COUNT(*) AS notas_na_fila,
+                COALESCE(SUM(
+                    CASE
+                        WHEN {prioridade_expr} IN ('alta', 'alta prioridade')
+                        THEN 1 ELSE 0
+                    END
+                ), 0) AS alta_prioridade,
+                COALESCE(SUM(
+                    CASE
+                        WHEN {prioridade_expr} IN ('critica', 'crítica', 'sla critico', 'sla crítico')
+                        THEN 1 ELSE 0
+                    END
+                ), 0) AS sla_critico
+            FROM nfse_notas n
+            {where}
+            """,
+            params,
+        ).fetchone()
+
+    empresas = [str(row["cert_alias"]) for row in empresas_rows if row.get("cert_alias")]
+    contadores = dict(contadores_row or {})
+    return {
+        "empresas": empresas,
+        "total_empresas": len(empresas),
+        "contadores": {
+            "notas_na_fila": int(contadores.get("notas_na_fila") or 0),
+            "alta_prioridade": int(contadores.get("alta_prioridade") or 0),
+            "sla_critico": int(contadores.get("sla_critico") or 0),
+        },
+    }
 
 
 def obter_resumo_processo(processo_id: str) -> Dict[str, Any]:

@@ -48,6 +48,7 @@ from modules.notas_repo import (
     listar_notas_por_processo,
     obter_resumo_processo,
     listar_notas_agrupadas,
+    listar_empresas_e_contadores_fila,
     atualizar_nota_campos_editaveis,
     listar_regras_atribuicao,
     criar_regra_atribuicao,
@@ -828,6 +829,10 @@ def get_execucoes(
 def get_nfse(
     cert_alias: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    status_fila: Optional[str] = Query(None),
+    status_fila_manual: Optional[str] = Query(None),
+    prioridade_manual: Optional[str] = Query(None),
+    responsavel: Optional[str] = Query(None),
     municipio: Optional[str] = Query(None),
     cnpj_cpf: Optional[str] = Query(None),
     competencia: Optional[str] = Query(None),
@@ -840,13 +845,24 @@ def get_nfse(
     page_size: int = Query(200, ge=1, le=500),
 ):
     filters = {
-        "cert_alias": cert_alias, "status": status, "municipio": municipio,
+        "cert_alias": cert_alias, "status": status, "status_fila": status_fila,
+        "status_fila_manual": status_fila_manual, "prioridade_manual": prioridade_manual,
+        "responsavel": responsavel, "municipio": municipio,
         "cnpj_cpf": cnpj_cpf, "competencia": competencia,
         "codigo_servico": codigo_servico, "somente_divergentes": somente_divergentes,
         "data_tipo": data_tipo, "data_inicio": data_inicio, "data_fim": data_fim,
     }
     items, total = listar_notas_agrupadas(filters, page=page, page_size=page_size)
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    fila_metadata = listar_empresas_e_contadores_fila(filters)
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "empresas_disponiveis": fila_metadata["empresas"],
+        "total_empresas": fila_metadata["total_empresas"],
+        "contadores": fila_metadata["contadores"],
+    }
 
 
 @app.get("/fila-regras-atribuicao", response_model=list[RegraAtribuicaoResponse])
