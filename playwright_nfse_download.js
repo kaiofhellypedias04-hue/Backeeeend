@@ -178,7 +178,7 @@ async function isSessionExpired(page) {
     return false;
   }
 
-  const hasTotalText = /total\s+de\s+\d+\s+registros/i.test(bodyText);
+  const hasTotalText = /total\s+de\s+\d+\s+registro(?:s)?/i.test(bodyText);
   const hasTable = await page.locator('xpath=//table//tbody/tr').count().catch(() => 0);
   
   if (!hasTotalText && hasTable === 0) {
@@ -620,17 +620,14 @@ async function applyDateFilterIfNeeded(page, startStr, endStr) {
   // preferir seletor de resultado (contador) a networkidle, porque a página pode fazer polling
   await page.waitForTimeout(400);
   try {
-    await page.locator(`xpath=//*[contains(.,'Total de') and contains(.,'registros')]`).first().waitFor({ timeout: 60000 });
-    console.log('   Filtro aplicado com total de registros confirmado.');
-  } catch (error) {
-    const bodyText = (await page.locator('body').innerText().catch(() => '')).toLowerCase();
-    const semResultados = ['nenhum registro', 'nenhum resultado', 'nÃ£o hÃ¡ dados', 'sem resultados', 'nenhuma nota']
-      .some((msg) => bodyText.includes(msg));
-    if (semResultados) {
+    const filterResult = await waitForFilterResult(page, 60000);
+    if (filterResult.kind === 'none') {
       console.log('   Filtro aplicado com 0 resultados.');
     } else {
-      throw new Error(`Filtro aplicado, mas o total de registros nao pode ser confirmado: ${error.message}`);
+      console.log(`   Filtro aplicado com total confirmado: ${filterResult.total} registro(s).`);
     }
+  } catch (error) {
+    throw new Error(`Filtro aplicado, mas o resultado nao pode ser confirmado: ${error.message}`);
   }
   await page.waitForTimeout(800);
   setStage('filter.done', `${startStr}..${endStr}`);
@@ -737,12 +734,44 @@ async function processRangeRecursively(page, startStr, endStr, depth, loginType,
 }
 const ITEMS_PER_PAGE = 15;
 
+function parseFilterResultText(text) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  const totalMatch = /total\s+de\s+(\d+)\s+registro(?:s)?/i.exec(normalized);
+  if (totalMatch) {
+    return { kind: 'total', total: parseInt(totalMatch[1], 10), text: normalized };
+  }
+
+  if (/nenhum\s+registro\s+encontrado/i.test(normalized)) {
+    return { kind: 'none', total: 0, text: normalized };
+  }
+
+  return null;
+}
+
+async function readFilterResultState(page) {
+  const bodyText = await page.locator('body').innerText().catch(() => '');
+  return parseFilterResultText(bodyText);
+}
+
+async function waitForFilterResult(page, timeout = 60000) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeout) {
+    const result = await readFilterResultState(page);
+    if (result) {
+      return result;
+    }
+    await page.waitForTimeout(250);
+  }
+
+  throw new Error(`Nenhum estado valido do filtro apareceu em ${timeout}ms`);
+}
+
 async function getTotalRegistros(page) {
   try {
-    const totalTxt = await page.locator(`xpath=//*[contains(.,'Total de') and contains(.,'registros')]`).first().innerText().catch(() => '');
-    const mTotal = /Total\s+de\s+(\d+)\s+registros/i.exec(totalTxt || '');
-    if (mTotal) {
-      return parseInt(mTotal[1], 10);
+    const result = await readFilterResultState(page);
+    if (result && Number.isInteger(result.total)) {
+      return result.total;
     }
   } catch (e) {
     logWarn('records.total', `Falha ao ler total de registros: ${e.message}`);
