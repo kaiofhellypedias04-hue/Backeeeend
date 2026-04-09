@@ -13,6 +13,8 @@ MODO COMPATIVEL SEM S3:
 """
 import logging
 import threading
+import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -96,6 +98,15 @@ def _normalize_remote_segment(value: str) -> str:
     return str(value or "").strip().replace("\\", "/").strip("/")
 
 
+def _sanitize_remote_filename(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    ascii_only = ascii_only.replace(" ", "_")
+    ascii_only = re.sub(r"[^A-Za-z0-9._-]+", "_", ascii_only)
+    ascii_only = re.sub(r"_+", "_", ascii_only).strip("._")
+    return ascii_only or "arquivo"
+
+
 def build_process_storage_key(
     tipo_arquivo: str,
     processo_id: str,
@@ -116,7 +127,7 @@ def build_process_storage_key(
     if not processo:
         raise ValueError("processo_id obrigatorio para montar o path remoto")
 
-    arquivo = Path(str(nome_arquivo)).name.strip()
+    arquivo = _sanitize_remote_filename(Path(str(nome_arquivo)).name.strip())
     if not arquivo:
         raise ValueError("nome_arquivo obrigatorio para montar o path remoto")
 
