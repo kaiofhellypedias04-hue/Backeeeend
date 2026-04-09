@@ -10,6 +10,17 @@ CREATE TABLE IF NOT EXISTS nfse_run_state (
   last_error TEXT
 );
 
+CREATE TABLE IF NOT EXISTS nfse_certificados (
+  alias TEXT PRIMARY KEY,
+  pfx_path TEXT,
+  storage_provider TEXT,
+  storage_bucket TEXT,
+  storage_path TEXT,
+  original_filename TEXT,
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
 -- 2) Cache CNPJ (somente Postgres)
 CREATE TABLE IF NOT EXISTS cnpj_cache (
   cnpj              CHAR(14) PRIMARY KEY,

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Iterable
 
+from .certificados_repo import listar_certificados as listar_certificados_db
 from .settings import ensure_json_file, get_settings
 
 
@@ -24,6 +25,13 @@ def _load_json_array(path: Path, label: str) -> list[dict]:
 
 def carregar_certificados(caminho: str | None = None) -> list[dict]:
     settings = get_settings()
+    try:
+        certificados_db = listar_certificados_db()
+        if certificados_db:
+            return certificados_db
+    except Exception:
+        pass
+
     path = Path(caminho) if caminho else settings.certs_json_path
     legacy_path = settings.project_root / "certs.json"
     if not path.exists() and legacy_path.exists():

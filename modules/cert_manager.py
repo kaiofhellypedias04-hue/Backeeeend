@@ -13,6 +13,11 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .certificados_repo import (
+    listar_certificados as listar_certificados_db,
+    remover_certificado as remover_certificado_db,
+    upsert_certificado as upsert_certificado_db,
+)
 from .cert_storage import (
     delete_certificate_object,
     is_supabase_cert_storage_configured,
@@ -91,6 +96,13 @@ def _certs_dir() -> Path:
 
 
 def load_certs(certs_json_path: str) -> List[Dict]:
+    try:
+        certs_db = listar_certificados_db()
+        if certs_db:
+            return certs_db
+    except Exception:
+        pass
+
     ensure_json_file(Path(certs_json_path), "[]")
     if not os.path.exists(certs_json_path):
         return []
@@ -154,6 +166,19 @@ def upsert_cert(
     storage_path: Optional[str] = None,
     original_filename: Optional[str] = None,
 ) -> List[Dict]:
+    try:
+        upsert_certificado_db(
+            alias.strip(),
+            pfxPath.strip(),
+            storage_provider=storage_provider,
+            storage_bucket=storage_bucket,
+            storage_path=storage_path,
+            original_filename=original_filename,
+        )
+        return load_certs(certs_json_path)
+    except RuntimeError:
+        pass
+
     certs = load_certs(certs_json_path)
     alias_n = alias.strip()
     pfx_n = pfxPath.strip()
@@ -198,6 +223,12 @@ def upsert_cert(
 
 
 def remove_cert(certs_json_path: str, alias: str) -> List[Dict]:
+    try:
+        remover_certificado_db(alias)
+        return load_certs(certs_json_path)
+    except RuntimeError:
+        pass
+
     certs = [c for c in load_certs(certs_json_path) if c.get("alias") != alias]
     save_certs(certs_json_path, certs)
     return certs

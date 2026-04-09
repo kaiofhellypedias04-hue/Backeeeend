@@ -58,6 +58,7 @@ from modules.notas_repo import (
     localizar_documentos_nota,
 )
 from modules.runner_processos import run_with_process, ProcessRunConfig, RunConfig
+from modules.certificados_repo import garantir_schema_nfse_certificados, migrar_certificados_legados
 from modules.cert_storage import certificate_display_name
 from modules.storage import is_s3_configured, generate_presigned_download_url, limpar_arquivos_antigos_minio
 from modules.schemas import (
@@ -277,8 +278,12 @@ def startup_event():
         ensure_directories()
         _log_runtime_storage_info()
         ensure_database_extensions()
+        garantir_schema_nfse_certificados()
         garantir_schema_nfse_notas()
         garantir_schema_nfse_execucoes()
+        migrados = migrar_certificados_legados(settings.certs_json_path)
+        if migrados:
+            logger.info("Migracao automatica de certificados legados concluida: %s certificado(s).", migrados)
     except Exception as exc:
         raise RuntimeError(f"Falha crítica no startup da API: {exc}") from exc
 
