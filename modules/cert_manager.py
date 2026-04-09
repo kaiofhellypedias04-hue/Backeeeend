@@ -1,8 +1,9 @@
 """
 Gerenciamento de certificados (.pfx) e credenciais CPF/CNPJ.
 
-- Os caminhos dos artefatos podem ser configurados por env vars.
-- Senhas usam prioridade: env vars -> arquivo local de segredos -> keyring opcional.
+- Certificados novos preferem Supabase Storage quando configurado.
+- Certificados legados com pfxPath local continuam funcionando via fallback.
+- Senhas usam o cofre/secret store existente; nao sao logadas.
 """
 from __future__ import annotations
 
@@ -12,6 +13,11 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .cert_storage import (
+    delete_certificate_object,
+    is_supabase_cert_storage_configured,
+    upload_certificate_bytes,
+)
 from .secret_store import (
     delete_certificate_password,
     delete_credential_password as delete_credential_secret,
@@ -64,10 +70,6 @@ def validar_cpf_cnpj(valor: str) -> bool:
     return False
 
 
-def _projeto_root() -> Path:
-    return get_settings().project_root
-
-
 def _safe_alias_filename(alias: str) -> str:
     safe = re.sub(r"[^\w\-. ]", "_", alias.strip()).strip(" ._")
     return safe or "certificado"
@@ -96,15 +98,29 @@ def load_certs(certs_json_path: str) -> List[Dict]:
         data = json.load(f)
     if not isinstance(data, list):
         return []
-    out = []
+
+    out: list[dict] = []
     for item in data:
         if not isinstance(item, dict):
             continue
         alias = (item.get("alias") or "").strip()
         pfx_path = (item.get("pfxPath") or "").strip()
-        if not alias or not pfx_path:
+        storage_path = (item.get("storage_path") or "").strip()
+        if not alias or (not pfx_path and not storage_path):
             continue
-        out.append({"alias": alias, "pfxPath": pfx_path})
+
+        normalized = {"alias": alias}
+        if pfx_path:
+            normalized["pfxPath"] = pfx_path
+        if item.get("storage_provider"):
+            normalized["storage_provider"] = item.get("storage_provider")
+        if item.get("storage_bucket"):
+            normalized["storage_bucket"] = item.get("storage_bucket")
+        if storage_path:
+            normalized["storage_path"] = storage_path
+        if item.get("original_filename"):
+            normalized["original_filename"] = item.get("original_filename")
+        out.append(normalized)
     return out
 
 
@@ -128,18 +144,55 @@ def delete_password(alias: str) -> None:
     delete_certificate_password(alias)
 
 
-def upsert_cert(certs_json_path: str, alias: str, pfxPath: str) -> List[Dict]:
+def upsert_cert(
+    certs_json_path: str,
+    alias: str,
+    pfxPath: str,
+    *,
+    storage_provider: Optional[str] = None,
+    storage_bucket: Optional[str] = None,
+    storage_path: Optional[str] = None,
+    original_filename: Optional[str] = None,
+) -> List[Dict]:
     certs = load_certs(certs_json_path)
     alias_n = alias.strip()
     pfx_n = pfxPath.strip()
     updated = False
+
     for c in certs:
         if c.get("alias") == alias_n:
             c["pfxPath"] = pfx_n
+            if storage_provider:
+                c["storage_provider"] = storage_provider
+            else:
+                c.pop("storage_provider", None)
+            if storage_bucket:
+                c["storage_bucket"] = storage_bucket
+            else:
+                c.pop("storage_bucket", None)
+            if storage_path:
+                c["storage_path"] = storage_path
+            else:
+                c.pop("storage_path", None)
+            if original_filename:
+                c["original_filename"] = original_filename
+            else:
+                c.pop("original_filename", None)
             updated = True
             break
+
     if not updated:
-        certs.append({"alias": alias_n, "pfxPath": pfx_n})
+        item = {"alias": alias_n, "pfxPath": pfx_n}
+        if storage_provider:
+            item["storage_provider"] = storage_provider
+        if storage_bucket:
+            item["storage_bucket"] = storage_bucket
+        if storage_path:
+            item["storage_path"] = storage_path
+        if original_filename:
+            item["original_filename"] = original_filename
+        certs.append(item)
+
     save_certs(certs_json_path, certs)
     return certs
 
@@ -215,25 +268,62 @@ def remove_credential(credentials_json_path: str, alias: str) -> List[Dict]:
     return creds
 
 
-def adicionar_certificado(alias: str, client_name: str, pfx_bytes: bytes, password: str) -> dict:
+def adicionar_certificado(
+    alias: str,
+    client_name: str,
+    pfx_bytes: bytes,
+    password: str,
+    original_filename: Optional[str] = None,
+) -> dict:
     certs_json = _certs_path()
-    cert_file = _certs_dir() / f"{_safe_alias_filename(alias)}.pfx"
 
     if not pfx_bytes:
         raise ValueError("Arquivo de certificado vazio.")
 
-    try:
-        cert_file.write_bytes(pfx_bytes)
-    except Exception as exc:
-        raise RuntimeError(f"Nao foi possivel salvar o certificado em {cert_file}: {exc}") from exc
+    certs = load_certs(certs_json)
+    existing = next((c for c in certs if c.get("alias") == alias), None)
 
-    upsert_cert(certs_json, alias, str(cert_file))
+    if is_supabase_cert_storage_configured():
+        uploaded = upload_certificate_bytes(alias, pfx_bytes, original_filename)
+        upsert_cert(
+            certs_json,
+            alias,
+            uploaded["pfxPath"],
+            storage_provider=uploaded["storage_provider"],
+            storage_bucket=uploaded["storage_bucket"],
+            storage_path=uploaded["storage_path"],
+            original_filename=uploaded["original_filename"],
+        )
+        if existing and existing.get("storage_provider") == "supabase" and existing.get("storage_bucket") and existing.get("storage_path"):
+            try:
+                delete_certificate_object(existing["storage_bucket"], existing["storage_path"])
+            except Exception:
+                # Toleramos lixo remoto temporario para nao quebrar o recadastro.
+                pass
+        elif existing:
+            old_path = Path(existing.get("pfxPath", ""))
+            if old_path.exists():
+                old_path.unlink(missing_ok=True)
+        pfx_display = uploaded["pfxPath"]
+    else:
+        cert_file = _certs_dir() / f"{_safe_alias_filename(alias)}.pfx"
+        try:
+            cert_file.write_bytes(pfx_bytes)
+        except Exception as exc:
+            raise RuntimeError(f"Nao foi possivel salvar o certificado em {cert_file}: {exc}") from exc
+        upsert_cert(
+            certs_json,
+            alias,
+            str(cert_file),
+            original_filename=Path(original_filename or cert_file.name).name,
+        )
+        pfx_display = str(cert_file)
+
     set_password(alias, password)
-
     return {
         "alias": alias,
         "client_name": client_name,
-        "pfxPath": str(cert_file),
+        "pfxPath": pfx_display,
     }
 
 
@@ -243,16 +333,19 @@ def editar_certificado(alias: str, novo_alias: Optional[str] = None, client_name
 
     cert = next((c for c in certs if c.get("alias") == alias), None)
     if not cert:
-        raise ValueError(f"Certificado '{alias}' não encontrado")
+        raise ValueError(f"Certificado '{alias}' nao encontrado")
 
     if novo_alias and novo_alias != alias:
         if any(c.get("alias") == novo_alias for c in certs):
-            raise ValueError(f"Alias '{novo_alias}' já está em uso")
+            raise ValueError(f"Alias '{novo_alias}' ja esta em uso")
 
-        old_path = Path(cert["pfxPath"])
-        new_path = _certs_dir() / f"{_safe_alias_filename(novo_alias)}.pfx"
-        if old_path.exists():
-            old_path.rename(new_path)
+        new_pfx_path = cert.get("pfxPath", "")
+        if not cert.get("storage_path"):
+            old_path = Path(cert.get("pfxPath", ""))
+            new_path = _certs_dir() / f"{_safe_alias_filename(novo_alias)}.pfx"
+            if old_path.exists():
+                old_path.rename(new_path)
+            new_pfx_path = str(new_path)
 
         senha = get_password(alias)
         if senha:
@@ -260,17 +353,25 @@ def editar_certificado(alias: str, novo_alias: Optional[str] = None, client_name
             delete_password(alias)
 
         remove_cert(certs_json, alias)
-        upsert_cert(certs_json, novo_alias, str(new_path))
-        return {"alias": novo_alias, "pfxPath": str(new_path)}
+        upsert_cert(
+            certs_json,
+            novo_alias,
+            new_pfx_path,
+            storage_provider=cert.get("storage_provider"),
+            storage_bucket=cert.get("storage_bucket"),
+            storage_path=cert.get("storage_path"),
+            original_filename=cert.get("original_filename"),
+        )
+        return {"alias": novo_alias, "pfxPath": new_pfx_path}
 
-    return {"alias": alias, "pfxPath": cert["pfxPath"]}
+    return {"alias": alias, "pfxPath": cert.get("pfxPath", "")}
 
 
 def redefinir_senha_certificado(alias: str, nova_senha: str) -> bool:
     certs_json = _certs_path()
     certs = load_certs(certs_json)
     if not any(c.get("alias") == alias for c in certs):
-        raise ValueError(f"Certificado '{alias}' não encontrado")
+        raise ValueError(f"Certificado '{alias}' nao encontrado")
     set_password(alias, nova_senha)
     return True
 
@@ -280,12 +381,15 @@ def excluir_certificado(alias: str, remover_arquivo: bool = True) -> bool:
     certs = load_certs(certs_json)
     cert = next((c for c in certs if c.get("alias") == alias), None)
     if not cert:
-        raise ValueError(f"Certificado '{alias}' não encontrado")
+        raise ValueError(f"Certificado '{alias}' nao encontrado")
 
     if remover_arquivo:
-        pfx = Path(cert.get("pfxPath", ""))
-        if pfx.exists():
-            pfx.unlink(missing_ok=True)
+        if cert.get("storage_provider") == "supabase" and cert.get("storage_bucket") and cert.get("storage_path"):
+            delete_certificate_object(cert["storage_bucket"], cert["storage_path"])
+        else:
+            pfx = Path(cert.get("pfxPath", ""))
+            if pfx.exists():
+                pfx.unlink(missing_ok=True)
 
     remove_cert(certs_json, alias)
     delete_password(alias)
@@ -295,8 +399,8 @@ def excluir_certificado(alias: str, remover_arquivo: bool = True) -> bool:
 def adicionar_credencial(alias: str, cpf_cnpj: str, password: str) -> dict:
     if not validar_cpf_cnpj(cpf_cnpj):
         raise ValueError(
-            f"CPF/CNPJ inválido: '{cpf_cnpj}'. "
-            "Informe um CPF (11 dígitos) ou CNPJ (14 dígitos) válido."
+            f"CPF/CNPJ invalido: '{cpf_cnpj}'. "
+            "Informe um CPF (11 digitos) ou CNPJ (14 digitos) valido."
         )
 
     credentials_json = _credentials_path()
@@ -311,17 +415,17 @@ def editar_credencial(alias: str, novo_alias: Optional[str] = None, cpf_cnpj: Op
 
     cred = next((c for c in creds if c.get("alias") == alias), None)
     if not cred:
-        raise ValueError(f"Credencial '{alias}' não encontrada")
+        raise ValueError(f"Credencial '{alias}' nao encontrada")
 
     if cpf_cnpj and not validar_cpf_cnpj(cpf_cnpj):
-        raise ValueError(f"CPF/CNPJ inválido: '{cpf_cnpj}'")
+        raise ValueError(f"CPF/CNPJ invalido: '{cpf_cnpj}'")
 
     novo_cpf = cpf_cnpj or cred["cpf_cnpj"]
     destino_alias = (novo_alias or alias).strip()
 
     if destino_alias != alias:
         if any(c.get("alias") == destino_alias for c in creds):
-            raise ValueError(f"Alias '{destino_alias}' já está em uso")
+            raise ValueError(f"Alias '{destino_alias}' ja esta em uso")
         senha = get_credential_password(alias)
         if senha:
             set_credential_password(destino_alias, senha)
@@ -336,7 +440,7 @@ def redefinir_senha_credencial(alias: str, nova_senha: str) -> bool:
     credentials_json = _credentials_path()
     creds = load_credentials(credentials_json)
     if not any(c.get("alias") == alias for c in creds):
-        raise ValueError(f"Credencial '{alias}' não encontrada")
+        raise ValueError(f"Credencial '{alias}' nao encontrada")
     set_credential_password(alias, nova_senha)
     return True
 
@@ -345,7 +449,7 @@ def excluir_credencial(alias: str) -> bool:
     credentials_json = _credentials_path()
     creds = load_credentials(credentials_json)
     if not any(c.get("alias") == alias for c in creds):
-        raise ValueError(f"Credencial '{alias}' não encontrada")
+        raise ValueError(f"Credencial '{alias}' nao encontrada")
     remove_credential(credentials_json, alias)
     delete_credential_password(alias)
     return True

@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from shutil import which
 
+from .cert_storage import materialize_certificates_for_runtime
 from .cert_manager import get_password, get_credential_password
+from .config_loader import carregar_certificados
 from .settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -216,9 +218,9 @@ def _run_node_download(
     if "--openssl-legacy-provider" not in node_opts:
         env["NODE_OPTIONS"] = (node_opts + " " if node_opts else "") + "--openssl-legacy-provider"
 
-    env["CERTS_JSON"] = certs_json_path
-    env["CREDENTIALS_JSON"] = credentials_json_path
-    env["LOGIN_TYPE"] = login_type
+    runtime_certs_ctx = None
+    runtime_certs_active = False
+    runtime_certs_json_path = certs_json_path
 
     try:
         if login_type == "certificado":
@@ -237,6 +239,12 @@ def _run_node_download(
                     "retryableExternally": False,
                 }
             env["PFX_PASS"] = pfx_pass
+            runtime_certs_ctx = materialize_certificates_for_runtime(
+                carregar_certificados(certs_json_path),
+                aliases=[cert_alias],
+            )
+            runtime_certs_json_path = runtime_certs_ctx.__enter__()
+            runtime_certs_active = True
         else:
             portal_pass = get_credential_password(cert_alias)
             if not portal_pass:
@@ -254,6 +262,10 @@ def _run_node_download(
                 }
             env["LOGIN_PASS"] = portal_pass
 
+        env["CERTS_JSON"] = runtime_certs_json_path
+        env["CREDENTIALS_JSON"] = credentials_json_path
+        env["LOGIN_TYPE"] = login_type
+
         proc = subprocess.run(
             [
                 settings.node_bin,
@@ -267,7 +279,7 @@ def _run_node_download(
                 "--downloadDir",
                 download_dir,
                 "--certsJson",
-                certs_json_path,
+                runtime_certs_json_path,
                 "--credentialsJson",
                 credentials_json_path,
                 "--loginType",
@@ -325,6 +337,9 @@ def _run_node_download(
             "errorCategory": "transient_process",
             "retryableExternally": True,
         }
+    finally:
+        if runtime_certs_ctx is not None and runtime_certs_active:
+            runtime_certs_ctx.__exit__(None, None, None)
 
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()

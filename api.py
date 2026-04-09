@@ -58,6 +58,7 @@ from modules.notas_repo import (
     localizar_documentos_nota,
 )
 from modules.runner_processos import run_with_process, ProcessRunConfig, RunConfig
+from modules.cert_storage import certificate_display_name
 from modules.storage import is_s3_configured, generate_presigned_download_url, limpar_arquivos_antigos_minio
 from modules.schemas import (
     StatusEnum, LoginTypeEnum, TipoNotaEnum, Pagination,
@@ -398,7 +399,7 @@ def listar_certificados():
             "cert_alias":  alias,
             "client_name": _alias_to_client_name(alias),
             "client_id":   _alias_to_client_id(alias),
-            "file_name":   Path(c.get("pfxPath") or f"{alias}.pfx").name,
+            "file_name":   certificate_display_name(c),
             "status":      "valid",
         })
     return {"certificados": items}
@@ -418,6 +419,7 @@ async def criar_certificado(
             client_name=client_name,
             pfx_bytes=content,
             password=password,
+            original_filename=file.filename,
         )
         return {"success": True, "certificado": cert}
     except Exception as e:

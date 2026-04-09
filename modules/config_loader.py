@@ -35,9 +35,21 @@ def carregar_certificados(caminho: str | None = None) -> list[dict]:
     for item in data:
         alias = (item.get("alias") or "").strip()
         pfx_path = (item.get("pfxPath") or "").strip()
-        if not alias or not pfx_path:
+        storage_path = (item.get("storage_path") or "").strip()
+        if not alias or (not pfx_path and not storage_path):
             continue
-        certs.append({"alias": alias, "pfxPath": pfx_path})
+        cert = {"alias": alias}
+        if pfx_path:
+            cert["pfxPath"] = pfx_path
+        if item.get("storage_provider"):
+            cert["storage_provider"] = item.get("storage_provider")
+        if item.get("storage_bucket"):
+            cert["storage_bucket"] = item.get("storage_bucket")
+        if storage_path:
+            cert["storage_path"] = storage_path
+        if item.get("original_filename"):
+            cert["original_filename"] = item.get("original_filename")
+        certs.append(cert)
     return certs
 
 

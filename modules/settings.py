@@ -114,6 +114,9 @@ class AppSettings:
     s3_access_key: str | None
     s3_secret_key: str | None
     s3_region: str
+    supabase_url: str | None
+    supabase_service_role_key: str | None
+    supabase_cert_bucket: str
 
     def ensure_runtime_dirs(self) -> None:
         directories = {
@@ -259,6 +262,9 @@ def get_settings() -> AppSettings:
         s3_access_key=os.getenv("S3_ACCESS_KEY"),
         s3_secret_key=os.getenv("S3_SECRET_KEY"),
         s3_region=os.getenv("S3_REGION", "us-east-1"),
+        supabase_url=os.getenv("SUPABASE_URL"),
+        supabase_service_role_key=os.getenv("SUPABASE_SERVICE_ROLE_KEY"),
+        supabase_cert_bucket=os.getenv("SUPABASE_CERT_BUCKET", "certificados"),
     )
     if not _can_prepare_directory(app_data_dir):
         raise RuntimeError(
