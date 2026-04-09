@@ -21,6 +21,13 @@ CREATE TABLE IF NOT EXISTS nfse_certificados (
   updated_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS nfse_certificados_segredos (
+  alias TEXT PRIMARY KEY,
+  cert_password TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
+
 -- 2) Cache CNPJ (somente Postgres)
 CREATE TABLE IF NOT EXISTS cnpj_cache (
   cnpj              CHAR(14) PRIMARY KEY,

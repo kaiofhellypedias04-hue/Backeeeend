@@ -5,6 +5,11 @@ from pathlib import Path
 from threading import Lock
 from typing import Optional
 
+from .certificados_secret_repo import (
+    delete_cert_password_db,
+    get_cert_password_db,
+    set_cert_password_db,
+)
 from .settings import ensure_json_file, env_names_for_alias, get_settings
 
 
@@ -129,20 +134,35 @@ def _delete_secret(kind: str, alias: str, service_name: str) -> None:
 
 
 def get_certificate_password(alias: str) -> Optional[str]:
-    return _get_secret(
+    password = get_cert_password_db(alias)
+    if password:
+        return password
+
+    password = _get_secret(
         kind="certificates",
         alias=alias,
         service_name="nfse_auditoria",
         per_alias_prefix="CERT_PASSWORD",
         json_env_name="CERT_PASSWORDS_JSON",
     )
+    if password:
+        try:
+            set_cert_password_db(alias, password)
+        except Exception:
+            pass
+    return password
 
 
 def set_certificate_password(alias: str, password: str) -> None:
+    try:
+        set_cert_password_db(alias, password)
+    except RuntimeError:
+        pass
     _set_secret("certificates", alias, password, "nfse_auditoria")
 
 
 def delete_certificate_password(alias: str) -> None:
+    delete_cert_password_db(alias)
     _delete_secret("certificates", alias, "nfse_auditoria")
 
 
