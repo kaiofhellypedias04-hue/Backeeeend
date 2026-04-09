@@ -521,7 +521,7 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
             try:
                 n = i_cert
                 sleep_s = 0.0
-                if n >= 1:
+                if n < len(cfg.cert_aliases):
                     if n <= 5:
                         sleep_s = random.uniform(180, 300)
                     elif 6 <= n <= 9:

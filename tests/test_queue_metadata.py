@@ -52,6 +52,29 @@ class QueueMetadataTests(unittest.TestCase):
             },
         )
 
+    @patch("api.listar_empresas_e_contadores_fila")
+    @patch("api.listar_notas_agrupadas")
+    def test_get_nfse_respeita_page_size_camel_case_sem_teto_de_500(self, listar_notas_mock, metadata_mock):
+        listar_notas_mock.return_value = ([{"id": 501}], 787)
+        metadata_mock.return_value = {
+            "empresas": ["Empresa A"],
+            "total_empresas": 1,
+            "contadores": {
+                "notas_na_fila": 787,
+                "alta_prioridade": 0,
+                "sla_critico": 0,
+            },
+        }
+
+        response = api.get_nfse(page=6, pageSize=1000)
+
+        listar_notas_mock.assert_called_once()
+        _, kwargs = listar_notas_mock.call_args
+        self.assertEqual(kwargs["page"], 6)
+        self.assertEqual(kwargs["page_size"], 1000)
+        self.assertEqual(response["page_size"], 1000)
+        self.assertEqual(response["total"], 787)
+
 
 if __name__ == "__main__":
     unittest.main()

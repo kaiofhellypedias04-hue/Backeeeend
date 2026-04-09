@@ -40,7 +40,7 @@ def criar_execucao(job_id: str, processo_id: str, payload: Dict[str, Any]) -> st
     return execucao_id
 
 
-def atualizar_status_execucao(job_id: str, status: str, started_at: Optional[datetime] = None, finished_at: Optional[datetime] = None, error: Optional[str] = None, traceback: Optional[str] = None):
+def atualizar_status_execucao(processo_id: str, status: str, started_at: Optional[datetime] = None, finished_at: Optional[datetime] = None, error: Optional[str] = None, traceback: Optional[str] = None):
     set_parts = ["status = %s"]
     params: List[Any] = [status]
     if started_at:
@@ -55,9 +55,9 @@ def atualizar_status_execucao(job_id: str, status: str, started_at: Optional[dat
     if traceback:
         set_parts.append("traceback = %s")
         params.append(traceback)
-    params.append(job_id)
+    params.append(processo_id)
     with get_conn() as conn:
-        conn.execute(f"UPDATE nfse_execucoes SET {', '.join(set_parts)} WHERE job_id = %s", params)
+        conn.execute(f"UPDATE nfse_execucoes SET {', '.join(set_parts)} WHERE processo_id = %s", params)
 
 
 def _row_to_dict(row):

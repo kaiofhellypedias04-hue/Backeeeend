@@ -61,6 +61,12 @@ from modules.runner_processos import run_with_process, ProcessRunConfig, RunConf
 from modules.certificados_repo import garantir_schema_nfse_certificados, migrar_certificados_legados
 from modules.certificados_secret_repo import garantir_schema_nfse_certificados_segredos
 from modules.cert_storage import certificate_display_name
+from modules.dispatch_queue import (
+    enqueue_dispatch_item,
+    garantir_schema_nfse_dispatch_queue,
+    scheduler_dispatch_guard,
+    start_dispatcher,
+)
 from modules.storage import is_s3_configured, generate_presigned_download_url, limpar_arquivos_antigos_minio
 from modules.schemas import (
     StatusEnum, LoginTypeEnum, TipoNotaEnum, Pagination,
@@ -199,6 +205,24 @@ def _build_run_config(req: ExecRequest, cert_alias: str) -> RunConfig:
     )
 
 
+def _queue_payload_from_config(cfg: RunConfig, cert_alias: str) -> dict:
+    return {
+        "modo": cfg.modo,
+        "base_dir": cfg.base_dir,
+        "certs_json_path": cfg.certs_json_path,
+        "credentials_json_path": cfg.credentials_json_path,
+        "cert_alias": cert_alias,
+        "start": cfg.start.isoformat() if cfg.start else None,
+        "end": cfg.end.isoformat() if cfg.end else None,
+        "headless": cfg.headless,
+        "use_chunk_days": cfg.use_chunk_days,
+        "chunk_days": cfg.chunk_days,
+        "consultar_api": cfg.consultar_api,
+        "login_type": str(cfg.login_type),
+        "tipo_nota": str(cfg.tipo_nota),
+    }
+
+
 def _alias_to_client_name(alias: str) -> str:
     alias = (alias or "").strip()
     if not alias:
@@ -281,17 +305,21 @@ def startup_event():
         ensure_database_extensions()
         garantir_schema_nfse_certificados()
         garantir_schema_nfse_certificados_segredos()
+        garantir_schema_nfse_dispatch_queue()
         garantir_schema_nfse_notas()
         garantir_schema_nfse_execucoes()
         migrados = migrar_certificados_legados(settings.certs_json_path)
         if migrados:
             logger.info("Migracao automatica de certificados legados concluida: %s certificado(s).", migrados)
+        start_dispatcher()
     except Exception as exc:
         raise RuntimeError(f"Falha crítica no startup da API: {exc}") from exc
 
     # Restaurar agendamentos que estavam ativos antes da última reinicialização
-    def _factory(payload: dict):
+    def _factory(row: dict):
         """Reconstrói a função de execução a partir do payload salvo."""
+        payload = row.get("payload_json") or {}
+        restored_job_id = str(row.get("job_id") or "")
         try:
             # Compatibilidade: payload antigo pode ter base_dir, ignoramos
             payload_clean = {k: v for k, v in payload.items() if k != 'base_dir'}
@@ -312,26 +340,31 @@ def startup_event():
             inicio, fim = _ultimos_30_dias()
             execution_id = str(uuid.uuid4())
             aliases = _get_aliases_validos(req.login_type)
-            for alias in req.cert_aliases:
-                if alias not in aliases:
-                    continue
-                proc_create = ProcessoCreate(
-                    execution_id=execution_id,
-                    cert_alias=alias,
-                    login_type=req.login_type,
-                    tipo_nota=req.tipo_nota,
-                    start_date=inicio,
-                    end_date=fim,
-                )
-                proc_id = criar_processo(proc_create)
-                criar_execucao(execution_id, proc_id, payload)
-                cfg = _build_run_config(req, alias)
-                pcfg = ProcessRunConfig(
-                    **{k: v for k, v in cfg.__dict__.items()},
-                    execution_id=execution_id,
-                    processo_id=proc_id,
-                )
-                Thread(target=run_with_process, args=(pcfg,), daemon=True).start()
+            slot_key = f"{inicio.isoformat()}:{fim.isoformat()}"
+            with scheduler_dispatch_guard(restored_job_id or execution_id, slot_key) as locked:
+                if not locked:
+                    logger.info("Agendamento restaurado ignorado: slot ja enfileirado por outra instancia.")
+                    return
+                for alias in req.cert_aliases:
+                    if alias not in aliases:
+                        continue
+                    proc_create = ProcessoCreate(
+                        execution_id=execution_id,
+                        cert_alias=alias,
+                        login_type=req.login_type,
+                        tipo_nota=req.tipo_nota,
+                        start_date=inicio,
+                        end_date=fim,
+                    )
+                    proc_id = criar_processo(proc_create)
+                    criar_execucao(execution_id, proc_id, payload)
+                    cfg = _build_run_config(req, alias)
+                    enqueue_dispatch_item(
+                        job_id=execution_id,
+                        processo_id=proc_id,
+                        cert_alias=alias,
+                        payload_json=_queue_payload_from_config(cfg, alias),
+                    )
 
         return executar
 
@@ -600,12 +633,12 @@ def executar(req: ExecRequest):
         )
 
         cfg = _build_run_config(req, alias)
-        pcfg = ProcessRunConfig(
-            **{k: v for k, v in cfg.__dict__.items()},
-            execution_id=job_id,
+        enqueue_dispatch_item(
+            job_id=job_id,
             processo_id=proc_id,
+            cert_alias=alias,
+            payload_json=_queue_payload_from_config(cfg, alias),
         )
-        Thread(target=run_with_process, args=(pcfg,), daemon=True).start()
         processos.append({"processo_id": proc_id, "cert_alias": alias})
 
     return {"job_id": job_id, "status": "queued", "processos": processos}
@@ -681,58 +714,64 @@ def agendar_execucao(req: ExecRequest):
         execution_id = str(uuid.uuid4())
         print(f"[AGENDAMENTO {job_id}] Iniciando processamento — período: {inicio} a {fim}")
 
-        for alias in req.cert_aliases:
-            proc_id = criar_processo(ProcessoCreate(
-                execution_id=execution_id,
-                cert_alias=alias,
-                login_type=req.login_type,
-                tipo_nota=req.tipo_nota,
-                start_date=inicio,
-                end_date=fim,
-            ))
+        slot_key = f"{inicio.isoformat()}:{fim.isoformat()}"
+        with scheduler_dispatch_guard(job_id, slot_key) as locked:
+            if not locked:
+                print(f"[AGENDAMENTO {job_id}] Disparo ignorado: outro backend ja enfileirou este slot.")
+                return
 
-            exec_payload = {
-                **payload,
-                "start": inicio.isoformat(),
-                "end": fim.isoformat(),
-                "agendado": True,
-                "hora_execucao": hora_str,
-            }
-            criar_execucao(execution_id, proc_id, exec_payload)
-            logger.info(
-                "Execucao agendada persistida",
-                extra={
-                    "execution_id": execution_id,
-                    "processo_id": proc_id,
-                    "cert_alias": alias,
-                    "use_chunk_days": exec_payload.get("use_chunk_days"),
-                    "chunk_days": exec_payload.get("chunk_days"),
-                    "start": exec_payload.get("start"),
-                    "end": exec_payload.get("end"),
-                },
-            )
+            for alias in req.cert_aliases:
+                proc_id = criar_processo(ProcessoCreate(
+                    execution_id=execution_id,
+                    cert_alias=alias,
+                    login_type=req.login_type,
+                    tipo_nota=req.tipo_nota,
+                    start_date=inicio,
+                    end_date=fim,
+                ))
 
-            cfg = RunConfig(
-                modo="manual",
-                base_dir=_get_data_dir(alias),
-                certs_json_path=str(settings.certs_json_path),
-                credentials_json_path=str(settings.credentials_json_path),
-                cert_aliases=[alias],
-                start=inicio,
-                end=fim,
-                headless=req.headless,
-                use_chunk_days=req.use_chunk_days,
-                chunk_days=req.chunk_days,
-                consultar_api=req.consultar_api,
-                login_type=req.login_type,
-                tipo_nota=req.tipo_nota,
-            )
-            pcfg = ProcessRunConfig(
-                **{k: v for k, v in cfg.__dict__.items()},
-                execution_id=execution_id,
-                processo_id=proc_id,
-            )
-            Thread(target=run_with_process, args=(pcfg,), daemon=True).start()
+                exec_payload = {
+                    **payload,
+                    "start": inicio.isoformat(),
+                    "end": fim.isoformat(),
+                    "agendado": True,
+                    "hora_execucao": hora_str,
+                }
+                criar_execucao(execution_id, proc_id, exec_payload)
+                logger.info(
+                    "Execucao agendada persistida",
+                    extra={
+                        "execution_id": execution_id,
+                        "processo_id": proc_id,
+                        "cert_alias": alias,
+                        "use_chunk_days": exec_payload.get("use_chunk_days"),
+                        "chunk_days": exec_payload.get("chunk_days"),
+                        "start": exec_payload.get("start"),
+                        "end": exec_payload.get("end"),
+                    },
+                )
+
+                cfg = RunConfig(
+                    modo="manual",
+                    base_dir=_get_data_dir(alias),
+                    certs_json_path=str(settings.certs_json_path),
+                    credentials_json_path=str(settings.credentials_json_path),
+                    cert_aliases=[alias],
+                    start=inicio,
+                    end=fim,
+                    headless=req.headless,
+                    use_chunk_days=req.use_chunk_days,
+                    chunk_days=req.chunk_days,
+                    consultar_api=req.consultar_api,
+                    login_type=req.login_type,
+                    tipo_nota=req.tipo_nota,
+                )
+                enqueue_dispatch_item(
+                    job_id=execution_id,
+                    processo_id=proc_id,
+                    cert_alias=alias,
+                    payload_json=_queue_payload_from_config(cfg, alias),
+                )
 
     iniciar_agendamento(
         job_id=job_id,
@@ -851,8 +890,18 @@ def get_nfse(
     data_fim: Optional[str] = Query(None),
     somente_divergentes: bool = Query(False),
     page: int = Query(1, ge=1),
-    page_size: int = Query(200, ge=1, le=500),
+    page_size: Optional[int] = Query(None, ge=1, le=10000),
+    pageSize: Optional[int] = Query(None, ge=1, le=10000),
 ):
+    if not isinstance(page_size, int):
+        page_size = None
+    if not isinstance(pageSize, int):
+        pageSize = None
+
+    resolved_page_size = pageSize if pageSize is not None else page_size
+    if resolved_page_size is None:
+        resolved_page_size = 200
+
     filters = {
         "cert_alias": cert_alias, "status": status, "status_fila": status_fila,
         "status_fila_manual": status_fila_manual, "prioridade_manual": prioridade_manual,
@@ -861,13 +910,13 @@ def get_nfse(
         "codigo_servico": codigo_servico, "somente_divergentes": somente_divergentes,
         "data_tipo": data_tipo, "data_inicio": data_inicio, "data_fim": data_fim,
     }
-    items, total = listar_notas_agrupadas(filters, page=page, page_size=page_size)
+    items, total = listar_notas_agrupadas(filters, page=page, page_size=resolved_page_size)
     fila_metadata = listar_empresas_e_contadores_fila(filters)
     return {
         "items": items,
         "total": total,
         "page": page,
-        "page_size": page_size,
+        "page_size": resolved_page_size,
         "empresas_disponiveis": fila_metadata["empresas"],
         "total_empresas": fila_metadata["total_empresas"],
         "contadores": fila_metadata["contadores"],

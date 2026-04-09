@@ -230,7 +230,7 @@ def restaurar_agendamentos_do_banco(factory: Callable[[dict], Callable]) -> int:
                 continue
 
             try:
-                func = factory(d.get("payload_json") or {})
+                func = factory(d)
                 if func is None:
                     continue
                 iniciar_agendamento(

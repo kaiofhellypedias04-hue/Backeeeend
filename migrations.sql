@@ -28,6 +28,27 @@ CREATE TABLE IF NOT EXISTS nfse_certificados_segredos (
   updated_at TIMESTAMP NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS nfse_dispatch_queue (
+  id BIGSERIAL PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  processo_id UUID NOT NULL,
+  cert_alias TEXT NOT NULL,
+  payload_json JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  started_at TIMESTAMP,
+  finished_at TIMESTAMP,
+  available_after TIMESTAMP NOT NULL DEFAULT now(),
+  last_error TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_nfse_dispatch_queue_status_available
+  ON nfse_dispatch_queue (status, available_after, created_at);
+CREATE INDEX IF NOT EXISTS idx_nfse_dispatch_queue_job
+  ON nfse_dispatch_queue (job_id);
+CREATE INDEX IF NOT EXISTS idx_nfse_dispatch_queue_processo
+  ON nfse_dispatch_queue (processo_id);
+
 -- 2) Cache CNPJ (somente Postgres)
 CREATE TABLE IF NOT EXISTS cnpj_cache (
   cnpj              CHAR(14) PRIMARY KEY,

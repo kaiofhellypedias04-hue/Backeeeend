@@ -44,7 +44,12 @@ def run_processing(cfg: RunConfig, logger=None, execution_id: Optional[str] = No
     If execution_id/processo_id provided, integrate DB tracking.
     """
     if execution_id and processo_id:
-        return run_with_process(cfg, execution_id, processo_id, logger)
+        pcfg = ProcessRunConfig(
+            **{k: v for k, v in cfg.__dict__.items()},
+            execution_id=execution_id,
+            processo_id=processo_id,
+        )
+        return run_with_process(pcfg, logger)
     else:
         return run_processing_without_process(cfg, logger)
 
@@ -56,7 +61,7 @@ def _run_with_process_inner(cfg: ProcessRunConfig, logger=None):
     garantir_schema_nfse_notas()
 
     atualizar_status_processo(cfg.processo_id, StatusEnum.running, datetime.now())
-    atualizar_status_execucao(cfg.execution_id, "running", datetime.now())
+    atualizar_status_execucao(cfg.processo_id, "running", datetime.now())
 
     try:
         resultados_execucao = run_processing_without_process(cfg, logger)
@@ -109,7 +114,7 @@ def _run_with_process_inner(cfg: ProcessRunConfig, logger=None):
             )
 
         atualizar_status_processo(cfg.processo_id, StatusEnum.completed, finished_at=datetime.now())
-        atualizar_status_execucao(cfg.execution_id, "completed", finished_at=datetime.now())
+        atualizar_status_execucao(cfg.processo_id, "completed", finished_at=datetime.now())
         return resultados_execucao
 
     except Exception as e:
@@ -123,7 +128,7 @@ def _run_with_process_inner(cfg: ProcessRunConfig, logger=None):
             error_message=error_message,
         )
         atualizar_status_execucao(
-            cfg.execution_id,
+            cfg.processo_id,
             "failed",
             finished_at=datetime.now(),
             error=error_message,
