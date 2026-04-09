@@ -66,7 +66,7 @@ def upload_certificate_bytes(alias: str, payload: bytes, original_filename: str 
         raise RuntimeError("Storage Supabase de certificados nao configurado.")
 
     suffix = _guess_suffix(original_filename)
-    storage_path = f"certificados/{_safe_alias_segment(alias)}/{uuid.uuid4().hex}{suffix}"
+    storage_path = f"{_safe_alias_segment(alias)}/{uuid.uuid4().hex}{suffix}"
     response = requests.post(
         _storage_url(settings.supabase_cert_bucket, storage_path),
         headers={
