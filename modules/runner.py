@@ -144,6 +144,14 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
         if obter_status_processo(str(processo_id)) == "cancelled":
             raise ProcessCancelledError(f"Processo {processo_id} foi cancelado manualmente.")
 
+    def _sleep_with_cancel_check(total_seconds: float) -> None:
+        remaining = max(0.0, float(total_seconds or 0.0))
+        while remaining > 0:
+            _assert_not_cancelled()
+            current_sleep = min(30.0, remaining)
+            time.sleep(current_sleep)
+            remaining -= current_sleep
+
     for i_cert, cert_alias in enumerate(cfg.cert_aliases, start=1):
         _assert_not_cancelled()
         print(f"\n{'=' * 60}")
@@ -210,6 +218,7 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
         last_ok_date: date | None = None
 
         def _process_tmp_dir(tmp_dir: str, base_dir_cert: str, periodo_start: date, periodo_end: date) -> dict[str, Any]:
+            _assert_not_cancelled()
             moved = distribuir_por_competencia(tmp_dir, base_dir_cert)
             xml_paths = list(moved.get("xml") or [])
             pdf_paths = list(moved.get("pdf") or [])
@@ -266,6 +275,7 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
             )
 
             for idx_batch, xml_batch in enumerate(_iter_file_batches(xml_paths, batch_size), start=1):
+                _assert_not_cancelled()
                 logger.info(
                     "Processando lote de XMLs",
                     {
@@ -283,10 +293,12 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                     )
                     continue
 
+                _assert_not_cancelled()
                 dados = converter.consultar_cnpjs_em_lote(dados)
                 dados_extraidos_total += len(dados or [])
 
                 for d in dados:
+                    _assert_not_cancelled()
                     try:
                         arquivo_origem = d.get("_arquivo_origem") or d.get("_Arquivo_Origem")
                         salvar_nota_nfse(
@@ -305,6 +317,7 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                         erros_salvamento.append(erro_txt)
                         logger.warning(f"Erro salvando nota | {erro_txt}")
 
+                _assert_not_cancelled()
                 existentes, adicionados = atualizar_planilha_incremental(
                     converter,
                     caminho_planilha,
@@ -406,6 +419,7 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                         "chunk_days_efetivo": chunk_days_valid,
                     },
                 )
+                _assert_not_cancelled()
                 ok, total_xmls, need_to_split, error_msg = executar_fluxo_nfse_playwright(
                     cert_alias=cert_alias,
                     data_inicial=_date_to_br(chunk_start),
@@ -418,6 +432,7 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                     download_dir=tmp_dir,
                     tipo_nota=cfg.tipo_nota,
                 )
+                _assert_not_cancelled()
                 if not ok:
                     detail = f": {error_msg}" if error_msg else ""
                     raise RuntimeError(
@@ -543,7 +558,7 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                         sleep_s = random.uniform(480, 540)
 
                     print(f"Espera pos-certificado {n}: {int(sleep_s)}s")
-                    time.sleep(sleep_s)
+                    _sleep_with_cancel_check(sleep_s)
             except Exception:
                 pass
 

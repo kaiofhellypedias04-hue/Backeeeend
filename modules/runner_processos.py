@@ -78,6 +78,7 @@ def _run_with_process_inner(cfg: ProcessRunConfig, logger=None):
 
     try:
         resultados_execucao = run_processing_without_process(cfg, logger)
+        _assert_process_not_cancelled(cfg.processo_id)
 
         if not resultados_execucao:
             raise RuntimeError("A execucao nao retornou resultados por certificado.")
@@ -87,6 +88,7 @@ def _run_with_process_inner(cfg: ProcessRunConfig, logger=None):
             primeiro_erro = erros[0].get("error") or "Falha na execucao"
             raise RuntimeError(primeiro_erro)
 
+        _assert_process_not_cancelled(cfg.processo_id)
         num_xml, num_pdf, num_relatorio, total_registrados = register_process_files(cfg, resultados_execucao)
 
         resumo = obter_resumo_processo(cfg.processo_id)
@@ -113,6 +115,7 @@ def _run_with_process_inner(cfg: ProcessRunConfig, logger=None):
                 f"Processo {cfg.processo_id} registrou {total_registrados} arquivo(s), mas 0 notas persistidas/vinculadas."
             )
 
+        _assert_process_not_cancelled(cfg.processo_id)
         resultado_cleanup = limpar_pasta_local(cfg)
         if resultado_cleanup.get("limpo"):
             logger_cleanup.info(

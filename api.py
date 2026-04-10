@@ -34,7 +34,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from modules.processos_repo import criar_processo, obter_processo, listar_processos
+from modules.processos_repo import criar_processo, obter_processo, listar_processos, atualizar_status_processo
 from modules.execucoes_repo import (
     criar_execucao,
     obter_execucao,
@@ -62,6 +62,8 @@ from modules.certificados_repo import garantir_schema_nfse_certificados, migrar_
 from modules.certificados_secret_repo import garantir_schema_nfse_certificados_segredos
 from modules.cert_storage import certificate_display_name
 from modules.dispatch_queue import (
+    cancel_dispatch_items_for_process,
+    get_dispatcher_debug_snapshot,
     enqueue_dispatch_item,
     garantir_schema_nfse_dispatch_queue,
     scheduler_dispatch_guard,
@@ -404,6 +406,7 @@ def health():
         "version": settings.app_version,
         "environment": settings.app_env,
         "timestamp": datetime.now().isoformat(),
+        "dispatcher": get_dispatcher_debug_snapshot(),
     }
 
 
@@ -824,6 +827,51 @@ def status_job(job_id: str):
             {"processo_id": p.id, "cert_alias": p.cert_alias, "status": p.status}
             for p in processos
         ],
+    }
+
+
+@app.post("/processos/{processo_id}/cancel")
+def cancel_processo(processo_id: str):
+    proc = obter_processo(processo_id)
+    if not proc:
+        raise HTTPException(status_code=404, detail="Processo não encontrado")
+
+    if proc.status in {StatusEnum.completed, StatusEnum.failed, StatusEnum.cancelled}:
+        return {
+            "success": True,
+            "processo_id": processo_id,
+            "status": proc.status,
+            "message": f"Processo já está em estado terminal: {proc.status}.",
+            "dispatch": {"queued_cancelled": 0, "running_signalled": 0},
+        }
+
+    message = "Processo cancelado manualmente via API."
+    atualizar_status_processo(
+        processo_id,
+        StatusEnum.cancelled,
+        finished_at=datetime.now(),
+        error_message=message,
+    )
+    atualizar_status_execucao(
+        processo_id,
+        "cancelled",
+        finished_at=datetime.now(),
+        error=message,
+        traceback="api_manual_cancel",
+    )
+    dispatch_result = cancel_dispatch_items_for_process(processo_id, reason=message)
+    logger.warning(
+        "Cancelamento manual solicitado para processo=%s queued_cancelled=%s running_signalled=%s",
+        processo_id,
+        dispatch_result["queued_cancelled"],
+        dispatch_result["running_signalled"],
+    )
+    return {
+        "success": True,
+        "processo_id": processo_id,
+        "status": StatusEnum.cancelled,
+        "message": message,
+        "dispatch": dispatch_result,
     }
 
 

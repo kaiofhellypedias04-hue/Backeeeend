@@ -87,6 +87,7 @@ def listar_execucoes(page: int = 1, page_size: int = 20) -> Dict[str, Any]:
                     CASE
                         WHEN COUNT(*) FILTER (WHERE p.status = 'running') > 0 THEN 'running'
                         WHEN COUNT(*) FILTER (WHERE p.status = 'failed') > 0 THEN 'failed'
+                        WHEN COUNT(*) FILTER (WHERE p.status = 'cancelled') = COUNT(*) AND COUNT(*) > 0 THEN 'cancelled'
                         WHEN COUNT(*) FILTER (WHERE p.status = 'completed') = COUNT(*) AND COUNT(*) > 0 THEN 'completed'
                         ELSE COALESCE(MAX(e.status), 'queued')
                     END AS status,
@@ -143,6 +144,7 @@ def obter_execucao(job_id: str) -> Optional[Dict[str, Any]]:
                 CASE
                     WHEN COUNT(*) FILTER (WHERE p.status = 'running') > 0 THEN 'running'
                     WHEN COUNT(*) FILTER (WHERE p.status = 'failed') > 0 THEN 'failed'
+                    WHEN COUNT(*) FILTER (WHERE p.status = 'cancelled') = COUNT(*) AND COUNT(*) > 0 THEN 'cancelled'
                     WHEN COUNT(*) FILTER (WHERE p.status = 'completed') = COUNT(*) AND COUNT(*) > 0 THEN 'completed'
                     ELSE COALESCE(MAX(e.status), 'queued')
                 END AS status,

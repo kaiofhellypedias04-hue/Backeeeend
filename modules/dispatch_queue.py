@@ -36,6 +36,56 @@ COOLDOWN_MAX_SECONDS = 300
 
 _dispatcher_thread: threading.Thread | None = None
 _dispatcher_guard = threading.Lock()
+_dispatcher_state_guard = threading.Lock()
+_dispatcher_state: dict[str, Any] = {
+    "thread_name": "nfse-dispatcher",
+    "thread_alive": False,
+    "started_at": None,
+    "last_loop_at": None,
+    "last_poll_at": None,
+    "last_lock_attempt_at": None,
+    "leader_acquired_at": None,
+    "last_item_id": None,
+    "last_processo_id": None,
+    "last_error": None,
+    "last_event": "idle",
+    "is_leader": False,
+}
+
+
+def _update_dispatcher_state(**kwargs: Any) -> None:
+    with _dispatcher_state_guard:
+        _dispatcher_state.update(kwargs)
+
+
+def get_dispatcher_debug_snapshot() -> dict[str, Any]:
+    garantir_schema_nfse_dispatch_queue()
+    with _dispatcher_state_guard:
+        snapshot = dict(_dispatcher_state)
+        thread = _dispatcher_thread
+        snapshot["thread_alive"] = bool(thread and thread.is_alive())
+    with get_conn() as conn:
+        counts_row = conn.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE status = %s) AS queued,
+              COUNT(*) FILTER (WHERE status = %s) AS running,
+              COUNT(*) FILTER (WHERE status = %s) AS completed,
+              COUNT(*) FILTER (WHERE status = %s) AS failed,
+              COUNT(*) FILTER (WHERE status = %s) AS cancelled
+            FROM nfse_dispatch_queue
+            """
+            ,
+            (
+                DISPATCH_STATUS_QUEUED,
+                DISPATCH_STATUS_RUNNING,
+                DISPATCH_STATUS_COMPLETED,
+                DISPATCH_STATUS_FAILED,
+                DISPATCH_STATUS_CANCELLED,
+            ),
+        ).fetchone()
+    snapshot["queue_counts"] = dict(counts_row) if counts_row else {}
+    return snapshot
 
 
 def garantir_schema_nfse_dispatch_queue() -> None:
@@ -127,6 +177,12 @@ def _dispatch_payload_to_config(item: dict[str, Any]) -> ProcessRunConfig:
 
 def _try_open_lock_connection() -> Optional[psycopg.Connection]:
     settings = get_settings()
+    _update_dispatcher_state(
+        last_lock_attempt_at=datetime.now(),
+        last_loop_at=datetime.now(),
+        last_event="trying_advisory_lock",
+    )
+    logger.info("[Dispatch] Tentando adquirir advisory lock global do dispatcher.")
     conn = psycopg.connect(
         get_database_url(),
         row_factory=dict_row,
@@ -135,13 +191,24 @@ def _try_open_lock_connection() -> Optional[psycopg.Connection]:
     )
     row = conn.execute("SELECT pg_try_advisory_lock(%s) AS locked", (DISPATCH_LOCK_KEY,)).fetchone()
     if row and row.get("locked"):
+        _update_dispatcher_state(
+            is_leader=True,
+            leader_acquired_at=datetime.now(),
+            last_event="leader_active",
+            last_error=None,
+        )
+        logger.info("[Dispatch] Advisory lock adquirido; esta instancia virou lider.")
         return conn
+    _update_dispatcher_state(is_leader=False, last_event="advisory_lock_not_acquired")
+    logger.info("[Dispatch] Advisory lock nao adquirido; outra instancia permanece lider.")
     conn.close()
     return None
 
 
 def _next_dispatch_item() -> Optional[dict[str, Any]]:
     garantir_schema_nfse_dispatch_queue()
+    _update_dispatcher_state(last_poll_at=datetime.now(), last_loop_at=datetime.now(), last_event="polling_queue")
+    logger.info("[Dispatch] Polling da fila iniciado.")
     with get_conn() as conn:
         row = conn.execute(
             """
@@ -155,6 +222,21 @@ def _next_dispatch_item() -> Optional[dict[str, Any]]:
             """,
             (DISPATCH_STATUS_QUEUED,),
         ).fetchone()
+    if row:
+        logger.info(
+            "[Dispatch] Item elegivel encontrado na fila id=%s processo=%s alias=%s.",
+            row["id"],
+            row["processo_id"],
+            row["cert_alias"],
+        )
+        _update_dispatcher_state(
+            last_item_id=row["id"],
+            last_processo_id=str(row["processo_id"]),
+            last_event="item_found",
+        )
+    else:
+        logger.info("[Dispatch] Fila vazia no polling atual.")
+        _update_dispatcher_state(last_event="queue_empty")
     return dict(row) if row else None
 
 
@@ -171,6 +253,8 @@ def _mark_dispatch_running(queue_id: int) -> None:
             """,
             (DISPATCH_STATUS_RUNNING, queue_id),
         )
+    _update_dispatcher_state(last_item_id=queue_id, last_event="item_marked_running")
+    logger.info("[Dispatch] Item id=%s marcado como running.", queue_id)
 
 
 def _mark_dispatch_terminal(
@@ -197,7 +281,75 @@ def _mark_dispatch_terminal(
             """,
             (status, cooldown_until, last_error, queue_id),
         )
+    _update_dispatcher_state(last_item_id=queue_id, last_event=f"item_terminal:{status}")
     return cooldown_until
+
+
+def cancel_dispatch_items_for_process(
+    processo_id: str,
+    *,
+    reason: str = "Processo cancelado manualmente.",
+) -> dict[str, int]:
+    garantir_schema_nfse_dispatch_queue()
+    with get_conn() as conn:
+        before_row = conn.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE status = %s) AS queued,
+              COUNT(*) FILTER (WHERE status = %s) AS running
+            FROM nfse_dispatch_queue
+            WHERE processo_id = %s
+              AND status IN (%s, %s)
+            """,
+            (
+                DISPATCH_STATUS_QUEUED,
+                DISPATCH_STATUS_RUNNING,
+                processo_id,
+                DISPATCH_STATUS_QUEUED,
+                DISPATCH_STATUS_RUNNING,
+            ),
+        ).fetchone()
+        conn.execute(
+            """
+            UPDATE nfse_dispatch_queue
+            SET status = CASE
+                    WHEN status = %s THEN %s
+                    ELSE status
+                END,
+                finished_at = CASE
+                    WHEN status = %s THEN now()
+                    ELSE finished_at
+                END,
+                available_after = CASE
+                    WHEN status = %s THEN now()
+                    ELSE available_after
+                END,
+                last_error = %s
+            WHERE processo_id = %s
+              AND status IN (%s, %s)
+            """,
+            (
+                DISPATCH_STATUS_QUEUED,
+                DISPATCH_STATUS_CANCELLED,
+                DISPATCH_STATUS_QUEUED,
+                DISPATCH_STATUS_QUEUED,
+                reason,
+                processo_id,
+                DISPATCH_STATUS_QUEUED,
+                DISPATCH_STATUS_RUNNING,
+            ),
+        )
+    result = {
+        "queued_cancelled": int((before_row or {}).get("queued") or 0),
+        "running_signalled": int((before_row or {}).get("running") or 0),
+    }
+    logger.warning(
+        "[Dispatch] Cancelamento solicitado para processo=%s queued_cancelled=%s running_signalled=%s.",
+        processo_id,
+        result["queued_cancelled"],
+        result["running_signalled"],
+    )
+    return result
 
 
 def _current_cooldown_until() -> Optional[datetime]:
@@ -230,8 +382,36 @@ def reconcile_orphaned_dispatch_items() -> int:
             (DISPATCH_STATUS_RUNNING,),
         ).fetchall()
         for row in rows:
-            error_message = "Execucao interrompida por restart/deploy; item running reconciliado pelo dispatcher."
-            cooldown_until = datetime.now() + timedelta(seconds=random.randint(COOLDOWN_MIN_SECONDS, COOLDOWN_MAX_SECONDS))
+            processo_id = str(row["processo_id"])
+            processo_status = obter_status_processo(processo_id)
+            if processo_status == StatusEnum.cancelled.value:
+                error_message = "Processo cancelado permaneceu como running na fila apos restart; item reconciliado como cancelled."
+                terminal_status = DISPATCH_STATUS_CANCELLED
+                cooldown_until = datetime.now()
+                atualizar_status_execucao(
+                    processo_id,
+                    "cancelled",
+                    finished_at=datetime.now(),
+                    error=error_message,
+                    traceback="dispatch_orphan_cancelled_reconciled",
+                )
+            else:
+                error_message = "Execucao interrompida por restart/deploy; item running reconciliado pelo dispatcher."
+                terminal_status = DISPATCH_STATUS_FAILED
+                cooldown_until = datetime.now() + timedelta(seconds=random.randint(COOLDOWN_MIN_SECONDS, COOLDOWN_MAX_SECONDS))
+                atualizar_status_processo(
+                    processo_id,
+                    StatusEnum.failed,
+                    finished_at=datetime.now(),
+                    error_message=error_message,
+                )
+                atualizar_status_execucao(
+                    processo_id,
+                    "failed",
+                    finished_at=datetime.now(),
+                    error=error_message,
+                    traceback="dispatch_orphan_reconciled",
+                )
             conn.execute(
                 """
                 UPDATE nfse_dispatch_queue
@@ -241,20 +421,7 @@ def reconcile_orphaned_dispatch_items() -> int:
                     last_error = %s
                 WHERE id = %s
                 """,
-                (DISPATCH_STATUS_FAILED, cooldown_until, error_message, row["id"]),
-            )
-            atualizar_status_processo(
-                str(row["processo_id"]),
-                StatusEnum.failed,
-                finished_at=datetime.now(),
-                error_message=error_message,
-            )
-            atualizar_status_execucao(
-                str(row["processo_id"]),
-                "failed",
-                finished_at=datetime.now(),
-                error=error_message,
-                traceback="dispatch_orphan_reconciled",
+                (terminal_status, cooldown_until, error_message, row["id"]),
             )
             reconciled += 1
     return reconciled
@@ -262,16 +429,20 @@ def reconcile_orphaned_dispatch_items() -> int:
 
 def _sleep_until(target: datetime | None) -> None:
     if not target:
+        _update_dispatcher_state(last_event="idle_sleep", last_loop_at=datetime.now())
         time.sleep(DISPATCH_IDLE_POLL_SECONDS)
         return
     while True:
         remaining = (target - datetime.now()).total_seconds()
         if remaining <= 0:
             return
+        _update_dispatcher_state(last_event="cooldown_wait", last_loop_at=datetime.now())
         time.sleep(min(DISPATCH_IDLE_POLL_SECONDS, remaining))
 
 
 def _dispatcher_leader_loop() -> None:
+    logger.info("[Dispatch] Loop principal do dispatcher lider iniciado.")
+    _update_dispatcher_state(last_event="leader_loop_started", last_loop_at=datetime.now())
     reconciled = reconcile_orphaned_dispatch_items()
     if reconciled:
         logger.warning("[Dispatch] %s item(ns) running reconciliado(s) apos restart/deploy.", reconciled)
@@ -279,6 +450,8 @@ def _dispatcher_leader_loop() -> None:
     while True:
         cooldown_until = _current_cooldown_until()
         if cooldown_until and cooldown_until > datetime.now():
+            logger.info("[Dispatch] Cooldown global ativo ate %s.", cooldown_until.isoformat())
+            _update_dispatcher_state(last_event="cooldown_active", last_loop_at=datetime.now())
             _sleep_until(cooldown_until)
             continue
 
@@ -291,6 +464,11 @@ def _dispatcher_leader_loop() -> None:
         processo_status = obter_status_processo(str(item["processo_id"]))
         if processo_status == StatusEnum.cancelled.value:
             message = "Item cancelado manualmente antes do inicio da execucao."
+            logger.warning(
+                "[Dispatch] Processo cancelado detectado antes do runner. queue_id=%s processo=%s.",
+                queue_id,
+                item["processo_id"],
+            )
             atualizar_status_execucao(
                 str(item["processo_id"]),
                 "cancelled",
@@ -305,7 +483,7 @@ def _dispatcher_leader_loop() -> None:
                 apply_cooldown=False,
             )
             logger.warning(
-                "[Dispatch] Item id=%s processo=%s ignorado por cancelamento previo.",
+                "[Dispatch] Item descartado por cancelamento. id=%s processo=%s.",
                 queue_id,
                 item["processo_id"],
             )
@@ -319,15 +497,17 @@ def _dispatcher_leader_loop() -> None:
         )
         try:
             cfg = _dispatch_payload_to_config(item)
+            logger.info("[Dispatch] Processo %s enviado ao runner.", item["processo_id"])
             run_with_process(cfg)
             cooldown_until = _mark_dispatch_terminal(queue_id, DISPATCH_STATUS_COMPLETED)
             logger.info(
-                "[Dispatch] Processo %s concluido. Cooldown global ate %s.",
+                "[Dispatch] Item concluido. processo=%s cooldown_ate=%s.",
                 item["processo_id"],
                 cooldown_until.isoformat(),
             )
         except ProcessCancelledError as exc:
             message = str(exc)
+            logger.warning("[Dispatch] Processo cancelado detectado durante execucao. processo=%s.", item["processo_id"])
             atualizar_status_processo(
                 str(item["processo_id"]),
                 StatusEnum.cancelled,
@@ -348,7 +528,7 @@ def _dispatcher_leader_loop() -> None:
                 apply_cooldown=False,
             )
             logger.warning(
-                "[Dispatch] Processo %s cancelado; item de fila finalizado sem cooldown.",
+                "[Dispatch] Item concluido como cancelled sem cooldown. processo=%s.",
                 item["processo_id"],
             )
         except Exception as exc:
@@ -370,7 +550,7 @@ def _dispatcher_leader_loop() -> None:
                 )
             cooldown_until = _mark_dispatch_terminal(queue_id, DISPATCH_STATUS_FAILED, error_message)
             logger.exception(
-                "[Dispatch] Processo %s falhou e entrou em cooldown ate %s.",
+                "[Dispatch] Item falhou. processo=%s cooldown_ate=%s.",
                 item["processo_id"],
                 cooldown_until.isoformat(),
             )
@@ -381,14 +561,16 @@ def _dispatcher_loop() -> None:
     while True:
         lock_conn = None
         try:
+            _update_dispatcher_state(thread_alive=True, last_loop_at=datetime.now(), last_event="dispatcher_loop_started")
             lock_conn = _try_open_lock_connection()
             if lock_conn is None:
                 time.sleep(DISPATCH_IDLE_POLL_SECONDS)
                 continue
             logger.info("[Dispatch] Dispatcher lider ativo com advisory lock global.")
             _dispatcher_leader_loop()
-        except Exception:
-            logger.exception("[Dispatch] Falha no loop do dispatcher; tentativa de recuperacao em andamento.")
+        except Exception as exc:
+            _update_dispatcher_state(last_error=str(exc), last_event="loop_exception", is_leader=False)
+            logger.exception("[Dispatch] Excecao no loop do dispatcher; tentativa de recuperacao em andamento.")
             time.sleep(DISPATCH_IDLE_POLL_SECONDS)
         finally:
             if lock_conn is not None:
@@ -397,12 +579,16 @@ def _dispatcher_loop() -> None:
                 except Exception:
                     pass
                 lock_conn.close()
+            _update_dispatcher_state(is_leader=False, last_loop_at=datetime.now())
 
 
 def start_dispatcher() -> None:
     global _dispatcher_thread
     with _dispatcher_guard:
+        logger.info("[Dispatch] start_dispatcher chamado.")
         if _dispatcher_thread and _dispatcher_thread.is_alive():
+            logger.info("[Dispatch] Thread do dispatcher ja existente e alive=%s.", _dispatcher_thread.is_alive())
+            _update_dispatcher_state(thread_alive=True, last_event="already_running", last_loop_at=datetime.now())
             return
         garantir_schema_nfse_dispatch_queue()
         _dispatcher_thread = threading.Thread(
@@ -411,6 +597,20 @@ def start_dispatcher() -> None:
             name="nfse-dispatcher",
         )
         _dispatcher_thread.start()
+        _update_dispatcher_state(
+            thread_name=_dispatcher_thread.name,
+            thread_alive=_dispatcher_thread.is_alive(),
+            started_at=datetime.now(),
+            last_loop_at=datetime.now(),
+            last_event="thread_started",
+            last_error=None,
+        )
+        logger.info(
+            "[Dispatch] Thread criada name=%s alive=%s ident=%s.",
+            _dispatcher_thread.name,
+            _dispatcher_thread.is_alive(),
+            _dispatcher_thread.ident,
+        )
 
 
 def _scheduler_lock_key(job_id: str, slot_key: str) -> int:
