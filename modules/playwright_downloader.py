@@ -14,6 +14,7 @@ from shutil import which
 from .cert_storage import materialize_certificates_for_runtime
 from .cert_manager import get_password, get_credential_password
 from .config_loader import carregar_certificados
+from .schemas import normalize_login_type
 from .settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -200,6 +201,7 @@ def _run_node_download(
 ) -> Dict[str, Any]:
     settings = get_settings()
     env = os.environ.copy()
+    login_type = normalize_login_type(login_type)
 
     logger.info(
         "Executando subprocesso Playwright com timeout efetivo de %s ms (origem=%s, env=%s)",
@@ -402,6 +404,7 @@ def executar_fluxo_nfse_playwright(
     tipo_nota: str = "tomados",
 ) -> Tuple[bool, int, bool, Optional[str]]:
     settings = get_settings()
+    login_type = normalize_login_type(login_type)
     script_path = Path(settings.playwright_script_path).resolve()
     package_json_path = settings.package_json_path
 

@@ -16,6 +16,16 @@ class LoginTypeEnum(str, Enum):
     cpf_cnpj = "cpf_cnpj"
 
 
+def normalize_login_type(value: Any) -> str:
+    raw = str(value or "").strip()
+    lowered = raw.lower()
+    if lowered in {"certificado", "logintypeenum.certificado"}:
+        return LoginTypeEnum.certificado.value
+    if lowered in {"cpf_cnpj", "logintypeenum.cpf_cnpj"}:
+        return LoginTypeEnum.cpf_cnpj.value
+    return raw or LoginTypeEnum.certificado.value
+
+
 class TipoNotaEnum(str, Enum):
     tomados = "tomados"
     prestados = "prestados"

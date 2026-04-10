@@ -11,7 +11,7 @@ from .schemas import APIInputPayload
 from modules.dispatch_queue import enqueue_dispatch_item
 from modules.execucoes_repo import criar_execucao
 from modules.processos_repo import criar_processo, obter_processo
-from modules.schemas import ProcessoCreate, StatusEnum
+from modules.schemas import ProcessoCreate, StatusEnum, normalize_login_type
 from modules.settings import get_settings
 
 
@@ -34,7 +34,7 @@ def _queue_payload_from_worker(api_payload: APIInputPayload) -> dict[str, Any]:
         "use_chunk_days": bool(api_payload.useChunkDays),
         "chunk_days": api_payload.chunkDays or 30,
         "consultar_api": True,
-        "login_type": api_payload.loginType,
+        "login_type": normalize_login_type(api_payload.loginType),
         "tipo_nota": api_payload.tipoNota,
     }
 

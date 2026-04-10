@@ -73,6 +73,7 @@ from modules.schemas import (
     ProcessoResponse, ArquivoResponse, NotaReportFilters,
     NotaReportRow, SummaryResponse, ProcessoCreate, NotaDocumentosResponse, NotaDocumentoItem,
     RegraAtribuicaoCreate, RegraAtribuicaoUpdate, RegraAtribuicaoResponse,
+    normalize_login_type,
 )
 from modules.reports import gerar_relatorio_processo
 from modules.db import get_conn, ensure_database_extensions
@@ -200,7 +201,7 @@ def _build_run_config(req: ExecRequest, cert_alias: str) -> RunConfig:
         use_chunk_days=req.use_chunk_days,
         chunk_days=req.chunk_days,
         consultar_api=req.consultar_api,
-        login_type=req.login_type,
+        login_type=normalize_login_type(req.login_type),
         tipo_nota=req.tipo_nota,
     )
 
@@ -218,7 +219,7 @@ def _queue_payload_from_config(cfg: RunConfig, cert_alias: str) -> dict:
         "use_chunk_days": cfg.use_chunk_days,
         "chunk_days": cfg.chunk_days,
         "consultar_api": cfg.consultar_api,
-        "login_type": str(cfg.login_type),
+        "login_type": normalize_login_type(cfg.login_type),
         "tipo_nota": str(cfg.tipo_nota),
     }
 
