@@ -17,7 +17,9 @@ from .notas_repo import (
     salvar_nota_nfse,
 )
 from .playwright_downloader import executar_fluxo_nfse_playwright
+from .processos_repo import obter_status_processo
 from .run_state_repo import garantir_schema_run_state, upsert_state
+from .schemas import ProcessCancelledError
 from .spreadsheet import atualizar_planilha_incremental
 
 DEFAULT_CHUNK_DAYS_FALLBACK = 5
@@ -135,7 +137,15 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
     converter = NFSeXMLConverterComAPI(tipo_nota=cfg.tipo_nota, consultar_api=cfg.consultar_api)
     resultados_execucao: list[dict[str, Any]] = []
 
+    def _assert_not_cancelled() -> None:
+        processo_id = getattr(cfg, "processo_id", None)
+        if not processo_id:
+            return
+        if obter_status_processo(str(processo_id)) == "cancelled":
+            raise ProcessCancelledError(f"Processo {processo_id} foi cancelado manualmente.")
+
     for i_cert, cert_alias in enumerate(cfg.cert_aliases, start=1):
+        _assert_not_cancelled()
         print(f"\n{'=' * 60}")
         print(f"{'CREDENCIAL' if cfg.login_type == 'cpf_cnpj' else 'CERTIFICADO'}: {cert_alias}")
         print("=" * 60)
@@ -371,6 +381,7 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
             erros_salvamento: list[str] = []
 
             for idx_chunk, (chunk_start, chunk_end) in enumerate(chunks, start=1):
+                _assert_not_cancelled()
                 print(
                     f"\n[chunk {idx_chunk}/{len(chunks)}] Inicio: "
                     f"{chunk_start.isoformat()} -> {chunk_end.isoformat()}"

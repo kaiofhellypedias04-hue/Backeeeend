@@ -15,8 +15,8 @@ from psycopg.types.json import Jsonb
 
 from .db import get_database_url, get_conn
 from .execucoes_repo import atualizar_status_execucao
-from .processos_repo import atualizar_status_processo, obter_processo
-from .runner_processos import ProcessRunConfig, run_with_process
+from .processos_repo import atualizar_status_processo, obter_processo, obter_status_processo
+from .runner_processos import ProcessCancelledError, ProcessRunConfig, run_with_process
 from .schemas import StatusEnum, normalize_login_type
 from .settings import get_settings
 
@@ -173,8 +173,18 @@ def _mark_dispatch_running(queue_id: int) -> None:
         )
 
 
-def _mark_dispatch_terminal(queue_id: int, status: str, last_error: str | None = None) -> datetime:
-    cooldown_until = datetime.now() + timedelta(seconds=random.randint(COOLDOWN_MIN_SECONDS, COOLDOWN_MAX_SECONDS))
+def _mark_dispatch_terminal(
+    queue_id: int,
+    status: str,
+    last_error: str | None = None,
+    *,
+    apply_cooldown: bool = True,
+) -> datetime:
+    cooldown_until = (
+        datetime.now() + timedelta(seconds=random.randint(COOLDOWN_MIN_SECONDS, COOLDOWN_MAX_SECONDS))
+        if apply_cooldown
+        else datetime.now()
+    )
     with get_conn() as conn:
         conn.execute(
             """
@@ -278,6 +288,28 @@ def _dispatcher_leader_loop() -> None:
             continue
 
         queue_id = int(item["id"])
+        processo_status = obter_status_processo(str(item["processo_id"]))
+        if processo_status == StatusEnum.cancelled.value:
+            message = "Item cancelado manualmente antes do inicio da execucao."
+            atualizar_status_execucao(
+                str(item["processo_id"]),
+                "cancelled",
+                finished_at=datetime.now(),
+                error=message,
+                traceback="dispatch_cancelled_before_start",
+            )
+            _mark_dispatch_terminal(
+                queue_id,
+                DISPATCH_STATUS_CANCELLED,
+                message,
+                apply_cooldown=False,
+            )
+            logger.warning(
+                "[Dispatch] Item id=%s processo=%s ignorado por cancelamento previo.",
+                queue_id,
+                item["processo_id"],
+            )
+            continue
         _mark_dispatch_running(queue_id)
         logger.info(
             "[Dispatch] Iniciando item de fila id=%s processo=%s alias=%s",
@@ -293,6 +325,31 @@ def _dispatcher_leader_loop() -> None:
                 "[Dispatch] Processo %s concluido. Cooldown global ate %s.",
                 item["processo_id"],
                 cooldown_until.isoformat(),
+            )
+        except ProcessCancelledError as exc:
+            message = str(exc)
+            atualizar_status_processo(
+                str(item["processo_id"]),
+                StatusEnum.cancelled,
+                finished_at=datetime.now(),
+                error_message=message,
+            )
+            atualizar_status_execucao(
+                str(item["processo_id"]),
+                "cancelled",
+                finished_at=datetime.now(),
+                error=message,
+                traceback="dispatch_cancelled_during_run",
+            )
+            cooldown_until = _mark_dispatch_terminal(
+                queue_id,
+                DISPATCH_STATUS_CANCELLED,
+                message,
+                apply_cooldown=False,
+            )
+            logger.warning(
+                "[Dispatch] Processo %s cancelado; item de fila finalizado sem cooldown.",
+                item["processo_id"],
             )
         except Exception as exc:
             error_message = str(exc)

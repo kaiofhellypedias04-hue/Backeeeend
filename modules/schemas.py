@@ -9,6 +9,7 @@ class StatusEnum(str, Enum):
     running = "running"
     completed = "completed"
     failed = "failed"
+    cancelled = "cancelled"
 
 
 class LoginTypeEnum(str, Enum):
@@ -24,6 +25,10 @@ def normalize_login_type(value: Any) -> str:
     if lowered in {"cpf_cnpj", "logintypeenum.cpf_cnpj"}:
         return LoginTypeEnum.cpf_cnpj.value
     return raw or LoginTypeEnum.certificado.value
+
+
+class ProcessCancelledError(RuntimeError):
+    pass
 
 
 class TipoNotaEnum(str, Enum):

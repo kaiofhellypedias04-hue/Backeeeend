@@ -14,9 +14,15 @@ from .arquivos_repo import garantir_schema_nfse_processo_arquivos
 from .db import get_conn
 from .execucoes_repo import atualizar_status_execucao, garantir_schema_nfse_execucoes
 from .notas_repo import obter_resumo_processo, garantir_schema_nfse_notas
-from .processos_repo import atualizar_status_processo, atualizar_totais_processo, garantir_schema_nfse_processos
+from .processos_repo import (
+    atualizar_status_processo,
+    atualizar_totais_processo,
+    garantir_schema_nfse_processos,
+    obter_status_processo,
+)
 from .runner import RunConfig, run_processing as run_processing_without_process
 from .schemas import StatusEnum
+from .schemas import ProcessCancelledError
 from .storage import (
     build_process_storage_key,
     is_s3_configured,
@@ -30,6 +36,12 @@ logger_cleanup = logging.getLogger("cleanup")
 _process_run_gate = threading.Lock()
 _process_run_gate_state = threading.Condition()
 _process_run_waiting = 0
+
+
+def _assert_process_not_cancelled(processo_id: str) -> None:
+    status = obter_status_processo(processo_id)
+    if status == StatusEnum.cancelled.value:
+        raise ProcessCancelledError(f"Processo {processo_id} foi cancelado manualmente.")
 
 
 @dataclass
@@ -60,6 +72,7 @@ def _run_with_process_inner(cfg: ProcessRunConfig, logger=None):
     garantir_schema_nfse_processo_arquivos()
     garantir_schema_nfse_notas()
 
+    _assert_process_not_cancelled(cfg.processo_id)
     atualizar_status_processo(cfg.processo_id, StatusEnum.running, datetime.now())
     atualizar_status_execucao(cfg.processo_id, "running", datetime.now())
 
@@ -117,6 +130,22 @@ def _run_with_process_inner(cfg: ProcessRunConfig, logger=None):
         atualizar_status_execucao(cfg.processo_id, "completed", finished_at=datetime.now())
         return resultados_execucao
 
+    except ProcessCancelledError as e:
+        logger_cleanup.info("[Processo] Cancelamento detectado para execucao %s / processo %s", cfg.execution_id, cfg.processo_id)
+        atualizar_status_processo(
+            cfg.processo_id,
+            StatusEnum.cancelled,
+            finished_at=datetime.now(),
+            error_message=str(e),
+        )
+        atualizar_status_execucao(
+            cfg.processo_id,
+            "cancelled",
+            finished_at=datetime.now(),
+            error=str(e),
+            traceback="process_cancelled",
+        )
+        raise
     except Exception as e:
         aliases = ", ".join(cfg.cert_aliases or [])
         error_message = f"Processo {cfg.processo_id} falhou para [{aliases}]: {e}"
@@ -157,6 +186,7 @@ def run_with_process(cfg: ProcessRunConfig, logger=None):
             _process_run_waiting = max(0, _process_run_waiting - 1)
             waiting_now = _process_run_waiting
 
+        _assert_process_not_cancelled(cfg.processo_id)
         logger_cleanup.info(
             "[ExecGate] Processo %s iniciou no slot global. aliases=[%s] aguardando_restante=%s",
             cfg.processo_id,

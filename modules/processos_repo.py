@@ -98,6 +98,22 @@ def obter_processo(processo_id: str) -> Optional[ProcessoResponse]:
         return _row_to_processo_response(row)
 
 
+def obter_status_processo(processo_id: str) -> Optional[str]:
+    garantir_schema_nfse_processos()
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT status
+            FROM nfse_processos
+            WHERE id = %s
+            """,
+            (processo_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return row.get("status")
+
+
 def listar_processos(
     cert_alias: Optional[str] = None,
     status: Optional[str] = None,
