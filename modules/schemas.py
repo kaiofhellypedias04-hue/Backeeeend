@@ -36,6 +36,16 @@ class TipoNotaEnum(str, Enum):
     prestados = "prestados"
 
 
+def normalize_tipo_nota(value: Any) -> str:
+    raw = str(value or "").strip()
+    lowered = raw.lower()
+    if lowered in {"tomados", "tiponotaenum.tomados"}:
+        return TipoNotaEnum.tomados.value
+    if lowered in {"prestados", "tiponotaenum.prestados"}:
+        return TipoNotaEnum.prestados.value
+    return raw or TipoNotaEnum.tomados.value
+
+
 class TipoArquivoEnum(str, Enum):
     pdf = "pdf"
     xml = "xml"

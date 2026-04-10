@@ -14,6 +14,17 @@ const LOGIN_URL =
 let NOTAS_URL = '/EmissorNacional/Notas/Recebidas';  // padrão: tomados
 let NOTAS_URL_CHECK = '/notas/recebidas';  // para verificação em lower case
 
+function normalizeTipoNota(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (raw === 'prestados' || raw === 'tiponotaenum.prestados') {
+    return 'prestados';
+  }
+  if (raw === 'tomados' || raw === 'tiponotaenum.tomados') {
+    return 'tomados';
+  }
+  return raw || 'tomados';
+}
+
 const KEEP_ALIVE_INTERVAL_MS = 30000;
 const CHECKPOINT_FILE = 'download_checkpoint.json';
 const MAX_RELOGIN_ATTEMPTS = 3;
@@ -1265,7 +1276,7 @@ async function downloadPageItems(page, downloadDir, pagina) {
   const certsJsonPath = pickArg(args, ['certsJson', 'certs_json_path', 'certs_json']);
   const credentialsJsonPath = pickArg(args, ['credentialsJson', 'credentials_json_path', 'credentials_json']);
   const loginType = pickArg(args, ['loginType', 'login_type']) || 'certificado';
-  const tipoNota = pickArg(args, ['tipoNota', 'tipo_nota', 'tipo']) || 'tomados';  // 'tomados' ou 'prestados'
+  const tipoNota = normalizeTipoNota(pickArg(args, ['tipoNota', 'tipo_nota', 'tipo']));  // 'tomados' ou 'prestados'
 
   // Configura a URL correta com base no tipo de nota
   if (tipoNota === 'prestados') {

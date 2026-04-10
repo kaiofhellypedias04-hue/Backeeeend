@@ -5,7 +5,7 @@ from datetime import date, datetime
 from typing import Optional, List, Any
 
 from .db import get_conn
-from .schemas import ProcessoCreate, ProcessoResponse, StatusEnum
+from .schemas import ProcessoCreate, ProcessoResponse, StatusEnum, normalize_tipo_nota
 
 
 def garantir_schema_nfse_processos():
@@ -46,7 +46,7 @@ def _row_to_processo_response(row) -> ProcessoResponse:
         execution_id=_uuid_to_str(row["execution_id"]),
         cert_alias=row["cert_alias"],
         login_type=row["login_type"],
-        tipo_nota=row["tipo_nota"],
+        tipo_nota=normalize_tipo_nota(row["tipo_nota"]),
         start_date=row["start_date"],
         end_date=row["end_date"],
         status=row["status"],
@@ -76,7 +76,7 @@ def criar_processo(data: ProcessoCreate) -> str:
             execution_id,
             data.cert_alias,
             data.login_type,
-            data.tipo_nota,
+            normalize_tipo_nota(data.tipo_nota),
             data.start_date,
             data.end_date
         ))

@@ -9,6 +9,7 @@ from psycopg.types.json import Jsonb
 
 from .db import get_conn
 from .nfse_keys import gerar_chave_nfse
+from .schemas import normalize_tipo_nota
 from .fiscal_status import (
     build_base_calculation_alert,
     build_sql_queue_status_expr,
@@ -430,10 +431,11 @@ def salvar_nota_nfse(cert_alias: str, processo_id: str | None, data: dict, arqui
                         tipo_nota = row[0] or tipo_nota
                     except Exception:
                         pass
+    tipo_nota = normalize_tipo_nota(tipo_nota)
 
     nome_raw = data.get("Razão Social") or "—"
     doc_raw = data.get("CNPJ/CPF") or "—"
-    parte_exibicao_tipo = "tomador" if tipo_nota == "tomados" else "prestador"
+    parte_exibicao_tipo = "prestador" if tipo_nota == "tomados" else "tomador"
     parte_exibicao_nome = nome_raw
     parte_exibicao_doc = doc_raw
 
@@ -764,7 +766,7 @@ def listar_notas_por_processo(
                    n.data_emissao,
                    COALESCE(n.parte_exibicao_doc, n.cnpj_prestador, '—') as cnpj_cpf,
                    COALESCE(n.parte_exibicao_nome, n.razao_social, '—') as razao_social,
-                   COALESCE(n.parte_exibicao_tipo, CASE WHEN n.tipo_nota = 'tomados' THEN 'tomador' ELSE 'prestador' END, '') as parte_exibicao_tipo,
+                   CASE WHEN n.tipo_nota = 'tomados' THEN 'prestador' ELSE 'tomador' END as parte_exibicao_tipo,
                    COALESCE(n.parte_exibicao_nome, n.razao_social, '—') as parte_exibicao_nome,
                    COALESCE(n.parte_exibicao_doc, n.cnpj_prestador, '—') as parte_exibicao_doc,
                    n.valor_total,
@@ -844,7 +846,7 @@ def listar_notas_agrupadas(filters: Optional[dict] = None, page: int = 1, page_s
                    n.data_emissao,
                    COALESCE(n.parte_exibicao_doc, n.cnpj_prestador, '—') as cnpj_cpf,
                    COALESCE(n.parte_exibicao_nome, n.razao_social, '—') as razao_social,
-                   COALESCE(n.parte_exibicao_tipo, '') as parte_exibicao_tipo,
+                   CASE WHEN n.tipo_nota = 'tomados' THEN 'prestador' ELSE 'tomador' END as parte_exibicao_tipo,
                    COALESCE(n.parte_exibicao_nome, n.razao_social, '—') as parte_exibicao_nome,
                    COALESCE(n.parte_exibicao_doc, n.cnpj_prestador, '—') as parte_exibicao_doc,
                    n.valor_total,

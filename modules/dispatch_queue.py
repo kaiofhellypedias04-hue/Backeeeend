@@ -17,7 +17,7 @@ from .db import get_database_url, get_conn
 from .execucoes_repo import atualizar_status_execucao
 from .processos_repo import atualizar_status_processo, obter_processo, obter_status_processo
 from .runner_processos import ProcessCancelledError, ProcessRunConfig, run_with_process
-from .schemas import StatusEnum, normalize_login_type
+from .schemas import StatusEnum, normalize_login_type, normalize_tipo_nota
 from .settings import get_settings
 
 logger = logging.getLogger("dispatch")
@@ -169,7 +169,7 @@ def _dispatch_payload_to_config(item: dict[str, Any]) -> ProcessRunConfig:
         chunk_days=int(payload.get("chunk_days") or 30),
         consultar_api=bool(payload.get("consultar_api", True)),
         login_type=normalize_login_type(payload.get("login_type")),
-        tipo_nota=str(payload.get("tipo_nota") or "tomados"),
+        tipo_nota=normalize_tipo_nota(payload.get("tipo_nota")),
         execution_id=str(item["job_id"]),
         processo_id=str(item["processo_id"]),
     )

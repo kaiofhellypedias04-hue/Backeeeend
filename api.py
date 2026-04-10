@@ -42,7 +42,11 @@ from modules.execucoes_repo import (
     listar_execucoes,
     garantir_schema_nfse_execucoes,
 )
-from modules.arquivos_repo import listar_arquivos_processo, obter_arquivo_processo
+from modules.arquivos_repo import (
+    listar_arquivos_processo,
+    obter_arquivo_processo,
+    garantir_schema_nfse_processo_arquivos,
+)
 from modules.notas_repo import (
     garantir_schema_nfse_notas,
     listar_notas_por_processo,
@@ -76,6 +80,7 @@ from modules.schemas import (
     NotaReportRow, SummaryResponse, ProcessoCreate, NotaDocumentosResponse, NotaDocumentoItem,
     RegraAtribuicaoCreate, RegraAtribuicaoUpdate, RegraAtribuicaoResponse,
     normalize_login_type,
+    normalize_tipo_nota,
 )
 from modules.reports import gerar_relatorio_processo
 from modules.db import get_conn, ensure_database_extensions
@@ -188,7 +193,7 @@ def _build_run_config(req: ExecRequest, cert_alias: str) -> RunConfig:
             "use_chunk_days": req.use_chunk_days,
             "chunk_days": req.chunk_days,
             "login_type": str(req.login_type),
-            "tipo_nota": str(req.tipo_nota),
+            "tipo_nota": normalize_tipo_nota(req.tipo_nota),
         },
     )
     return RunConfig(
@@ -204,7 +209,7 @@ def _build_run_config(req: ExecRequest, cert_alias: str) -> RunConfig:
         chunk_days=req.chunk_days,
         consultar_api=req.consultar_api,
         login_type=normalize_login_type(req.login_type),
-        tipo_nota=req.tipo_nota,
+        tipo_nota=normalize_tipo_nota(req.tipo_nota),
     )
 
 
@@ -222,7 +227,7 @@ def _queue_payload_from_config(cfg: RunConfig, cert_alias: str) -> dict:
         "chunk_days": cfg.chunk_days,
         "consultar_api": cfg.consultar_api,
         "login_type": normalize_login_type(cfg.login_type),
-        "tipo_nota": str(cfg.tipo_nota),
+        "tipo_nota": normalize_tipo_nota(cfg.tipo_nota),
     }
 
 
@@ -602,7 +607,7 @@ def executar(req: ExecRequest):
             "use_chunk_days": req.use_chunk_days,
             "chunk_days": req.chunk_days,
             "login_type": str(req.login_type),
-            "tipo_nota": str(req.tipo_nota),
+            "tipo_nota": normalize_tipo_nota(req.tipo_nota),
         },
     )
     aliases_validos = _get_aliases_validos(req.login_type)
@@ -683,7 +688,7 @@ def agendar_execucao(req: ExecRequest):
             "chunk_days": req.chunk_days,
             "hora_execucao": req.hora_execucao,
             "login_type": str(req.login_type),
-            "tipo_nota": str(req.tipo_nota),
+            "tipo_nota": normalize_tipo_nota(req.tipo_nota),
         },
     )
 
@@ -768,7 +773,7 @@ def agendar_execucao(req: ExecRequest):
                     chunk_days=req.chunk_days,
                     consultar_api=req.consultar_api,
                     login_type=req.login_type,
-                    tipo_nota=req.tipo_nota,
+                    tipo_nota=normalize_tipo_nota(req.tipo_nota),
                 )
                 enqueue_dispatch_item(
                     job_id=execution_id,
@@ -837,6 +842,11 @@ def cancel_processo(processo_id: str):
         raise HTTPException(status_code=404, detail="Processo não encontrado")
 
     if proc.status in {StatusEnum.completed, StatusEnum.failed, StatusEnum.cancelled}:
+        logger.info(
+            "Cancelamento ignorado para processo terminal. processo=%s status=%s",
+            processo_id,
+            proc.status,
+        )
         return {
             "success": True,
             "processo_id": processo_id,
@@ -846,6 +856,11 @@ def cancel_processo(processo_id: str):
         }
 
     message = "Processo cancelado manualmente via API."
+    logger.warning(
+        "Cancelamento manual solicitado para processo=%s status_atual=%s",
+        processo_id,
+        proc.status,
+    )
     atualizar_status_processo(
         processo_id,
         StatusEnum.cancelled,
@@ -866,6 +881,7 @@ def cancel_processo(processo_id: str):
         dispatch_result["queued_cancelled"],
         dispatch_result["running_signalled"],
     )
+    logger.info("Processo %s marcado como cancelled com sucesso.", processo_id)
     return {
         "success": True,
         "processo_id": processo_id,
@@ -873,6 +889,128 @@ def cancel_processo(processo_id: str):
         "message": message,
         "dispatch": dispatch_result,
     }
+
+
+@app.delete("/processos/{processo_id}")
+def delete_processo(processo_id: str):
+    proc = obter_processo(processo_id)
+    if not proc:
+        raise HTTPException(status_code=404, detail="Processo não encontrado")
+
+    if proc.status in {StatusEnum.queued, StatusEnum.running}:
+        logger.warning(
+            "Exclusão bloqueada para processo ativo. processo=%s status=%s",
+            processo_id,
+            proc.status,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"Processo com status '{proc.status}' não pode ser excluído. Cancele-o antes de excluir.",
+        )
+
+    garantir_schema_nfse_execucoes()
+    garantir_schema_nfse_notas()
+    garantir_schema_nfse_processo_arquivos()
+    garantir_schema_nfse_dispatch_queue()
+
+    logger.warning(
+        "Exclusão manual solicitada para processo=%s status=%s",
+        processo_id,
+        proc.status,
+    )
+
+    try:
+        with get_conn() as conn:
+            related = conn.execute(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM nfse_dispatch_queue WHERE processo_id = %s) AS dispatch_total,
+                  (SELECT COUNT(*) FROM nfse_dispatch_queue WHERE processo_id = %s AND status IN ('queued', 'running')) AS dispatch_ativos,
+                  (SELECT COUNT(*) FROM nfse_execucoes WHERE processo_id = %s) AS execucoes_total,
+                  (SELECT COUNT(*) FROM nfse_processo_arquivos WHERE processo_id = %s) AS arquivos_total,
+                  (SELECT COUNT(*) FROM nfse_processo_notas WHERE processo_id = %s) AS vinculos_notas_total,
+                  (SELECT COUNT(*) FROM nfse_notas WHERE processo_id = %s) AS notas_diretas_total
+                """,
+                (processo_id, processo_id, processo_id, processo_id, processo_id, processo_id),
+            ).fetchone()
+
+            dispatch_ativos = int((related or {}).get("dispatch_ativos") or 0)
+            if dispatch_ativos > 0:
+                logger.warning(
+                    "Exclusão bloqueada por itens ativos na fila. processo=%s dispatch_ativos=%s",
+                    processo_id,
+                    dispatch_ativos,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="Processo possui item(ns) ativos na fila. Cancele o processo e aguarde a fila finalizar o cancelamento antes de excluir.",
+                )
+
+            deleted_dispatch = conn.execute(
+                "DELETE FROM nfse_dispatch_queue WHERE processo_id = %s",
+                (processo_id,),
+            ).rowcount or 0
+            deleted_execucoes = conn.execute(
+                "DELETE FROM nfse_execucoes WHERE processo_id = %s",
+                (processo_id,),
+            ).rowcount or 0
+            deleted_vinculos_notas = conn.execute(
+                "DELETE FROM nfse_processo_notas WHERE processo_id = %s",
+                (processo_id,),
+            ).rowcount or 0
+            detached_notas = conn.execute(
+                """
+                UPDATE nfse_notas
+                SET processo_id = NULL,
+                    updated_at = now()
+                WHERE processo_id = %s
+                """,
+                (processo_id,),
+            ).rowcount or 0
+            deleted_processos = conn.execute(
+                "DELETE FROM nfse_processos WHERE id = %s",
+                (processo_id,),
+            ).rowcount or 0
+
+        if deleted_processos == 0:
+            logger.warning("Exclusão abortada: processo %s sumiu durante a operação.", processo_id)
+            raise HTTPException(status_code=404, detail="Processo não encontrado para exclusão")
+
+        logger.info(
+            "Exclusão concluída para processo=%s dispatch=%s execucoes=%s vinculos_notas=%s notas_desvinculadas=%s arquivos_em_cascata=%s",
+            processo_id,
+            deleted_dispatch,
+            deleted_execucoes,
+            deleted_vinculos_notas,
+            detached_notas,
+            int((related or {}).get("arquivos_total") or 0),
+        )
+        return {
+            "success": True,
+            "processo_id": processo_id,
+            "status_anterior": proc.status,
+            "message": "Processo excluído com sucesso. Notas foram preservadas e apenas desvinculadas do processo.",
+            "deleted": {
+                "processos": deleted_processos,
+                "dispatch_items": deleted_dispatch,
+                "execucoes": deleted_execucoes,
+                "processo_notas": deleted_vinculos_notas,
+                "arquivos_metadados_em_cascata": int((related or {}).get("arquivos_total") or 0),
+            },
+            "detached": {
+                "notas_com_processo_id_nulo": detached_notas,
+            },
+            "storage_cleanup": {
+                "remote_objects_removed": False,
+                "local_files_removed": False,
+                "reason": "comportamento_conservador_para_evitar_apagar_arquivos_físicos_compartilhados_ou_ainda_úteis",
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Falha ao excluir processo=%s", processo_id)
+        raise HTTPException(status_code=500, detail=f"Falha ao excluir processo: {exc}")
 
 
 # ─── Execuções ────────────────────────────────────────────────────────────────
