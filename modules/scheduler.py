@@ -71,11 +71,12 @@ def iniciar_agendamento(
     intervalo_segundos: int = 86400,
     descricao: str = "",
     payload: Optional[dict] = None,
+    first_run_at: Optional[datetime] = None,
 ) -> str:
     garantir_schema_agendamentos()
 
     agora = now_utc()
-    proxima = agora  # primeira execução imediata
+    proxima = first_run_at or agora  # compatibilidade: execução imediata por padrão
 
     # Persistir no banco
     try:
@@ -112,6 +113,20 @@ def iniciar_agendamento(
 
     def loop():
         while _jobs.get(job_id, {}).get("ativo"):
+            proxima_info = _jobs.get(job_id, {}).get("proxima_execucao")
+            if proxima_info:
+                try:
+                    alvo_execucao = datetime.fromisoformat(str(proxima_info))
+                except Exception:
+                    alvo_execucao = None
+                if alvo_execucao is not None:
+                    restante_ate_execucao = max(0.0, (alvo_execucao - now_utc()).total_seconds())
+                    while restante_ate_execucao > 0 and _jobs.get(job_id, {}).get("ativo"):
+                        time.sleep(min(30, restante_ate_execucao))
+                        restante_ate_execucao -= 30
+                    if not _jobs.get(job_id, {}).get("ativo"):
+                        break
+
             erro_str = None
             agora_exec = now_utc()
             try:
@@ -200,7 +215,10 @@ def listar_agendamentos() -> List[Dict[str, Any]]:
     return resultado
 
 
-def restaurar_agendamentos_do_banco(factory: Callable[[dict], Callable]) -> int:
+def restaurar_agendamentos_do_banco(
+    factory: Callable[[dict], Callable],
+    first_run_at_resolver: Optional[Callable[[dict], Optional[datetime]]] = None,
+) -> int:
     """
     Chamado no startup da API para reativar jobs que estavam ativos
     antes da última reinicialização.
@@ -240,6 +258,7 @@ def restaurar_agendamentos_do_banco(factory: Callable[[dict], Callable]) -> int:
                     intervalo_segundos=d.get("intervalo_segundos", 86400),
                     descricao=d.get("descricao", ""),
                     payload=d.get("payload_json") or {},
+                    first_run_at=first_run_at_resolver(d) if first_run_at_resolver else None,
                 )
                 restaurados += 1
                 print(f"[SCHEDULER] Job restaurado: {job_id}")

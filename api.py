@@ -264,6 +264,16 @@ def _ultimos_dias(dias: int | None = 30) -> tuple[date, date]:
     return hoje - timedelta(days=dias_normalizados - 1), hoje
 
 
+def _calcular_proxima_execucao_horario(hora_str: str) -> datetime:
+    """Retorna a próxima ocorrência futura válida para o horário informado."""
+    hora_h, hora_m = map(int, hora_str.split(":"))
+    agora = now_utc()
+    alvo = agora.replace(hour=hora_h, minute=hora_m, second=0, microsecond=0)
+    if alvo <= agora:
+        alvo += timedelta(days=1)
+    return alvo
+
+
 def _get_aliases_validos(login_type: LoginTypeEnum) -> set:
     """Retorna o conjunto de aliases válidos conforme o tipo de login."""
     if login_type == LoginTypeEnum.cpf_cnpj:
@@ -389,7 +399,16 @@ def startup_event():
 
         return executar
 
-    restaurados = restaurar_agendamentos_do_banco(_factory)
+    def _restore_first_run_at(row: dict) -> datetime | None:
+        payload = row.get("payload_json") or {}
+        hora_str = str(payload.get("hora_execucao") or "06:00")
+        try:
+            return _calcular_proxima_execucao_horario(hora_str)
+        except Exception:
+            logger.warning("hora_execucao invalido no restore; fallback para proxima execucao imediata", extra={"job_id": row.get("job_id"), "hora_execucao": hora_str})
+            return None
+
+    restaurados = restaurar_agendamentos_do_banco(_factory, first_run_at_resolver=_restore_first_run_at)
     if restaurados:
         print(f"[API] {restaurados} agendamento(s) restaurado(s) do banco.")
 
@@ -707,33 +726,10 @@ def agendar_execucao(req: ExecRequest):
         },
     )
 
-    def _segundos_ate_proximo_horario() -> float:
-        """Calcula quantos segundos faltam para o próximo disparo no horário configurado."""
-        agora = now_utc()
-        alvo = agora.replace(hour=hora_h, minute=hora_m, second=0, microsecond=0)
-        if alvo <= agora:
-            # Horário já passou hoje — próximo disparo é amanhã
-            alvo += timedelta(days=1)
-        return (alvo - agora).total_seconds()
-
     def _calcular_proxima_execucao() -> datetime:
-        agora = now_utc()
-        alvo = agora.replace(hour=hora_h, minute=hora_m, second=0, microsecond=0)
-        if alvo <= agora:
-            alvo += timedelta(days=1)
-        return alvo
+        return _calcular_proxima_execucao_horario(hora_str)
 
-    def executar_agendado():
-        # Aguarda até o horário configurado antes de processar
-        espera = _segundos_ate_proximo_horario()
-        print(f"[AGENDAMENTO {job_id}] Aguardando {int(espera)}s até {hora_str} para iniciar processamento...")
-
-        # Sleep em fatias de 30s para responder ao cancelamento rapidamente
-        restante = espera
-        while restante > 0:
-            time.sleep(min(30, restante))
-            restante -= 30
-
+    def _executar_agendado_sem_espera() -> None:
         inicio, fim = _ultimos_dias(req.lookback_days)
         execution_id = str(uuid.uuid4())
         print(f"[AGENDAMENTO {job_id}] Iniciando processamento — período: {inicio} a {fim}")
@@ -798,6 +794,19 @@ def agendar_execucao(req: ExecRequest):
                     cert_alias=alias,
                     payload_json=_queue_payload_from_config(cfg, alias),
                 )
+
+    def executar_agendado():
+        # Aguarda até o horário configurado antes de processar
+        espera = (_calcular_proxima_execucao() - now_utc()).total_seconds()
+        print(f"[AGENDAMENTO {job_id}] Aguardando {int(espera)}s até {hora_str} para iniciar processamento...")
+
+        # Sleep em fatias de 30s para responder ao cancelamento rapidamente
+        restante = espera
+        while restante > 0:
+            time.sleep(min(30, restante))
+            restante -= 30
+
+        _executar_agendado_sem_espera()
 
     iniciar_agendamento(
         job_id=job_id,
