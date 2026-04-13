@@ -35,6 +35,7 @@ class RunConfig:
     start: date | None = None
     end: date | None = None
     headless: bool = False
+    lookback_days: int = 30
     use_chunk_days: bool = False
     chunk_days: int = 15  # Chunk manual por data no Python; split >800 continua no Node
     consultar_api: bool = True

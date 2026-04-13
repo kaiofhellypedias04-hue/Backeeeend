@@ -129,6 +129,11 @@ class ExecRequest(BaseModel):
     start: date
     end: date
     headless: bool = True
+    lookback_days: int = Field(
+        30,
+        ge=1,
+        description="Janela total em dias usada no modo automatico; nao afeta chunk_days",
+    )
     use_chunk_days: bool = False
     chunk_days: int = 30
     consultar_api: bool = True
@@ -191,6 +196,7 @@ def _build_run_config(req: ExecRequest, cert_alias: str) -> RunConfig:
             "cert_alias": cert_alias,
             "start": req.start.isoformat() if req.start else None,
             "end": req.end.isoformat() if req.end else None,
+            "lookback_days": req.lookback_days,
             "use_chunk_days": req.use_chunk_days,
             "chunk_days": req.chunk_days,
             "login_type": str(req.login_type),
@@ -206,6 +212,7 @@ def _build_run_config(req: ExecRequest, cert_alias: str) -> RunConfig:
         start=req.start,
         end=req.end,
         headless=req.headless,
+        lookback_days=req.lookback_days,
         use_chunk_days=req.use_chunk_days,
         chunk_days=req.chunk_days,
         consultar_api=req.consultar_api,
@@ -224,6 +231,7 @@ def _queue_payload_from_config(cfg: RunConfig, cert_alias: str) -> dict:
         "start": cfg.start.isoformat() if cfg.start else None,
         "end": cfg.end.isoformat() if cfg.end else None,
         "headless": cfg.headless,
+        "lookback_days": getattr(cfg, "lookback_days", 30),
         "use_chunk_days": cfg.use_chunk_days,
         "chunk_days": cfg.chunk_days,
         "consultar_api": cfg.consultar_api,
@@ -247,10 +255,13 @@ def _alias_to_client_id(alias: str) -> str:
     return value or "cliente"
 
 
-def _ultimos_30_dias() -> tuple[date, date]:
-    """Retorna (hoje - 29 dias, hoje) — últimos 30 dias corridos."""
+def _ultimos_dias(dias: int | None = 30) -> tuple[date, date]:
+    """Retorna (hoje - (dias-1), hoje) para a janela total informada."""
     hoje = date.today()
-    return hoje - timedelta(days=29), hoje
+    dias_normalizados = int(dias or 30)
+    if dias_normalizados < 1:
+        dias_normalizados = 30
+    return hoje - timedelta(days=dias_normalizados - 1), hoje
 
 
 def _get_aliases_validos(login_type: LoginTypeEnum) -> set:
@@ -337,6 +348,7 @@ def startup_event():
                 "Payload de agendamento restaurado",
                 extra={
                     "cert_aliases": list(req.cert_aliases),
+                    "lookback_days": req.lookback_days,
                     "use_chunk_days": req.use_chunk_days,
                     "chunk_days": req.chunk_days,
                     "hora_execucao": req.hora_execucao,
@@ -346,7 +358,7 @@ def startup_event():
             return None
 
         def executar():
-            inicio, fim = _ultimos_30_dias()
+            inicio, fim = _ultimos_dias(req.lookback_days)
             execution_id = str(uuid.uuid4())
             aliases = _get_aliases_validos(req.login_type)
             slot_key = f"{inicio.isoformat()}:{fim.isoformat()}"
@@ -603,6 +615,7 @@ def executar(req: ExecRequest):
         "Requisicao /executar recebida",
         extra={
             "cert_aliases": list(req.cert_aliases),
+            "lookback_days": req.lookback_days,
             "start": req.start.isoformat(),
             "end": req.end.isoformat(),
             "use_chunk_days": req.use_chunk_days,
@@ -685,6 +698,7 @@ def agendar_execucao(req: ExecRequest):
         extra={
             "job_id": job_id,
             "cert_aliases": list(req.cert_aliases),
+            "lookback_days": req.lookback_days,
             "use_chunk_days": req.use_chunk_days,
             "chunk_days": req.chunk_days,
             "hora_execucao": req.hora_execucao,
@@ -720,7 +734,7 @@ def agendar_execucao(req: ExecRequest):
             time.sleep(min(30, restante))
             restante -= 30
 
-        inicio, fim = _ultimos_30_dias()
+        inicio, fim = _ultimos_dias(req.lookback_days)
         execution_id = str(uuid.uuid4())
         print(f"[AGENDAMENTO {job_id}] Iniciando processamento — período: {inicio} a {fim}")
 
@@ -754,6 +768,7 @@ def agendar_execucao(req: ExecRequest):
                         "execution_id": execution_id,
                         "processo_id": proc_id,
                         "cert_alias": alias,
+                        "lookback_days": exec_payload.get("lookback_days"),
                         "use_chunk_days": exec_payload.get("use_chunk_days"),
                         "chunk_days": exec_payload.get("chunk_days"),
                         "start": exec_payload.get("start"),
@@ -770,6 +785,7 @@ def agendar_execucao(req: ExecRequest):
                     start=inicio,
                     end=fim,
                     headless=req.headless,
+                    lookback_days=req.lookback_days,
                     use_chunk_days=req.use_chunk_days,
                     chunk_days=req.chunk_days,
                     consultar_api=req.consultar_api,
@@ -787,19 +803,20 @@ def agendar_execucao(req: ExecRequest):
         job_id=job_id,
         func=executar_agendado,
         intervalo_segundos=86400,
-        descricao=f"Automático diário {hora_str} — últimos 30 dias — {', '.join(req.cert_aliases)}",
+        descricao=f"Automático diário {hora_str} — últimos {req.lookback_days} dias — {', '.join(req.cert_aliases)}",
         payload=payload,
     )
 
     proxima = _calcular_proxima_execucao()
-    inicio, fim = _ultimos_30_dias()
+    inicio, fim = _ultimos_dias(req.lookback_days)
     return {
         "success": True,
         "job_id": job_id,
         "tipo": "automatico_diario",
         "hora_execucao": hora_str,
         "intervalo_segundos": 86400,
-        "descricao": f"Últimos 30 dias corridos, todo dia às {hora_str}",
+        "descricao": f"Últimos {req.lookback_days} dias corridos, todo dia às {hora_str}",
+        "lookback_days": req.lookback_days,
         "proxima_execucao": proxima.isoformat(),
         "periodo_proximo": {"start": inicio.isoformat(), "end": fim.isoformat()},
     }
@@ -1043,6 +1060,7 @@ def get_execucoes(
             "mode":             "automatico" if payload.get("agendado") else "manual",
             "period_start":     payload.get("start"),
             "period_end":       payload.get("end"),
+            "lookback_days":    payload.get("lookback_days", 30),
             "use_chunk_days":   payload.get("use_chunk_days", False),
             "chunk_days":       payload.get("chunk_days"),
             "status":           row.get("status"),

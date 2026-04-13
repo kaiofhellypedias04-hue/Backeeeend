@@ -166,6 +166,7 @@ def _dispatch_payload_to_config(item: dict[str, Any]) -> ProcessRunConfig:
         start=_parse_date(payload.get("start")),
         end=_parse_date(payload.get("end")),
         headless=bool(payload.get("headless", False)),
+        lookback_days=int(payload.get("lookback_days") or 30),
         use_chunk_days=bool(payload.get("use_chunk_days", False)),
         chunk_days=int(payload.get("chunk_days") or 30),
         consultar_api=bool(payload.get("consultar_api", True)),
