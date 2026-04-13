@@ -38,6 +38,9 @@ STATUS_FILA_LABEL_EXPR = (
 
 
 def garantir_schema_nfse_notas():
+    from .arquivos_repo import garantir_schema_nfse_processo_arquivos
+
+    garantir_schema_nfse_processo_arquivos()
     with get_conn() as conn:
         conn.execute("""
         CREATE TABLE IF NOT EXISTS nfse_notas (
@@ -127,6 +130,17 @@ def garantir_schema_nfse_notas():
         )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_nfse_processo_notas_nota ON nfse_processo_notas (nota_id)")
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS nfse_nota_documentos (
+          id BIGSERIAL PRIMARY KEY,
+          nota_id BIGINT NOT NULL REFERENCES nfse_notas(id) ON DELETE CASCADE,
+          arquivo_id BIGINT NOT NULL REFERENCES nfse_processo_arquivos(id) ON DELETE CASCADE,
+          tipo_arquivo TEXT NOT NULL CHECK (tipo_arquivo IN ('xml', 'pdf')),
+          created_at TIMESTAMP NOT NULL DEFAULT now(),
+          UNIQUE (nota_id, tipo_arquivo)
+        )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_nfse_nota_documentos_arquivo ON nfse_nota_documentos (arquivo_id)")
         conn.execute("""
         CREATE TABLE IF NOT EXISTS nfse_regras_atribuicao (
           id BIGSERIAL PRIMARY KEY,
@@ -1073,6 +1087,127 @@ def _digits_only(value: Any) -> str:
     return re.sub(r"\D", "", str(value or ""))
 
 
+def _basename_text(value: Any) -> str:
+    if not value:
+        return ""
+    return Path(str(value)).name.strip()
+
+
+def _basename_lookup_key(value: Any) -> str:
+    return _normalize_file_key(_basename_text(value))
+
+
+def _index_unique_files_by_basename(rows: List[dict], tipo_arquivo: str) -> Dict[str, Optional[dict]]:
+    grouped: Dict[str, List[dict]] = {}
+    for row in rows:
+        item = dict(row)
+        if str(item.get("tipo_arquivo") or "") != tipo_arquivo:
+            continue
+        key = _basename_lookup_key(item.get("nome_arquivo"))
+        if not key:
+            continue
+        grouped.setdefault(key, []).append(item)
+
+    unique_map: Dict[str, Optional[dict]] = {}
+    for key, items in grouped.items():
+        unique_map[key] = items[0] if len(items) == 1 else None
+    return unique_map
+
+
+def _pdf_key_from_xml_name(nome_arquivo_xml: Any) -> str:
+    nome = _basename_text(nome_arquivo_xml)
+    if not nome:
+        return ""
+    return _normalize_file_key(f"{Path(nome).stem}.pdf")
+
+
+def _resolver_documentos_deterministicos(
+    nota: dict,
+    arquivos_rows: List[dict],
+    explicit_docs: Optional[Dict[str, dict]] = None,
+) -> Dict[str, Optional[dict]]:
+    docs: Dict[str, Optional[dict]] = {"xml": None, "pdf": None}
+    if explicit_docs:
+        for tipo, item in explicit_docs.items():
+            if tipo in docs and item is not None:
+                docs[tipo] = dict(item)
+
+    xml_by_name = _index_unique_files_by_basename(arquivos_rows, "xml")
+    pdf_by_name = _index_unique_files_by_basename(arquivos_rows, "pdf")
+
+    if docs["xml"] is None:
+        arquivo_origem_nome = _basename_text(nota.get("arquivo_origem"))
+        if arquivo_origem_nome:
+            docs["xml"] = xml_by_name.get(_basename_lookup_key(arquivo_origem_nome))
+
+    if docs["pdf"] is None and docs["xml"] is not None:
+        docs["pdf"] = pdf_by_name.get(_pdf_key_from_xml_name(docs["xml"].get("nome_arquivo")))
+
+    return docs
+
+
+def vincular_documentos_processo(processo_id: str) -> Dict[str, int]:
+    garantir_schema_nfse_notas()
+
+    with get_conn() as conn:
+        notas_rows = conn.execute(
+            """
+            SELECT DISTINCT n.id, n.arquivo_origem
+            FROM nfse_notas n
+            WHERE n.processo_id = %s
+               OR EXISTS (
+                    SELECT 1
+                    FROM nfse_processo_notas ppn
+                    WHERE ppn.nota_id = n.id
+                      AND ppn.processo_id = %s
+               )
+            """,
+            (processo_id, processo_id),
+        ).fetchall()
+
+        arquivos_rows = conn.execute(
+            """
+            SELECT id, processo_id, tipo_arquivo, nome_arquivo, storage_key, caminho_local, content_type, tamanho_bytes, competencia, created_at
+            FROM nfse_processo_arquivos
+            WHERE processo_id = %s
+              AND tipo_arquivo IN ('xml', 'pdf')
+            ORDER BY created_at DESC, id DESC
+            """,
+            (processo_id,),
+        ).fetchall()
+
+        notas = [dict(row) for row in notas_rows]
+        arquivos = [dict(row) for row in arquivos_rows]
+        vinculados_xml = 0
+        vinculados_pdf = 0
+
+        for nota in notas:
+            docs = _resolver_documentos_deterministicos(nota, arquivos)
+            for tipo in ("xml", "pdf"):
+                arquivo = docs.get(tipo)
+                if not arquivo:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO nfse_nota_documentos (nota_id, arquivo_id, tipo_arquivo)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (nota_id, tipo_arquivo)
+                    DO UPDATE SET arquivo_id = EXCLUDED.arquivo_id
+                    """,
+                    (nota["id"], arquivo["id"], tipo),
+                )
+                if tipo == "xml":
+                    vinculados_xml += 1
+                else:
+                    vinculados_pdf += 1
+
+    return {
+        "notas_analisadas": len(notas),
+        "xml_vinculados": vinculados_xml,
+        "pdf_vinculados": vinculados_pdf,
+    }
+
+
 def _score_arquivo_para_nota(row: dict, tipo_arquivo: str, arquivo_origem_nome: str, arquivo_origem_stem: str, numero_documento: str, chave_nfse: str) -> int:
     nome = str(row.get("nome_arquivo") or "")
     stem = Path(nome).stem
@@ -1127,6 +1262,28 @@ def localizar_documentos_nota(nota_id: int) -> dict:
         if not processo_id:
             return {"nota_id": nota_id, "processo_id": None, "xml": None, "pdf": None}
 
+        linked_rows = conn.execute(
+            """
+            SELECT
+              nd.tipo_arquivo,
+              a.id,
+              a.processo_id,
+              a.nome_arquivo,
+              a.storage_key,
+              a.caminho_local,
+              a.content_type,
+              a.tamanho_bytes,
+              a.competencia,
+              a.created_at
+            FROM nfse_nota_documentos nd
+            JOIN nfse_processo_arquivos a ON a.id = nd.arquivo_id
+            WHERE nd.nota_id = %s
+              AND a.processo_id = %s
+            ORDER BY nd.created_at DESC, nd.id DESC
+            """,
+            (nota_id, processo_id),
+        ).fetchall()
+
         arquivos = conn.execute(
             """
             SELECT id, processo_id, tipo_arquivo, nome_arquivo, storage_key, caminho_local, content_type, tamanho_bytes, competencia, created_at
@@ -1137,6 +1294,21 @@ def localizar_documentos_nota(nota_id: int) -> dict:
             """,
             (processo_id,),
         ).fetchall()
+
+    explicit_docs: Dict[str, dict] = {}
+    for row in linked_rows:
+        item = dict(row)
+        tipo = str(item.get("tipo_arquivo") or "")
+        if tipo in ("xml", "pdf") and tipo not in explicit_docs:
+            explicit_docs[tipo] = item
+
+    best = _resolver_documentos_deterministicos(dict(nota), [dict(row) for row in arquivos], explicit_docs=explicit_docs)
+    return {
+        "nota_id": nota_id,
+        "processo_id": processo_id,
+        "xml": best["xml"],
+        "pdf": best["pdf"],
+    }
 
     dados = nota["dados_completos"] or {}
     arquivo_origem_nome = Path(str(nota["arquivo_origem"] or "")).name

@@ -171,3 +171,14 @@ CREATE TABLE IF NOT EXISTS nfse_processo_arquivos (
 );
 CREATE INDEX idx_nfse_arquivos_processo_tipo ON nfse_processo_arquivos (processo_id, tipo_arquivo);
 CREATE INDEX idx_nfse_arquivos_competencia ON nfse_processo_arquivos (competencia);
+
+-- 7) Vinculo explicito nota -> documento
+CREATE TABLE IF NOT EXISTS nfse_nota_documentos (
+  id BIGSERIAL PRIMARY KEY,
+  nota_id BIGINT NOT NULL REFERENCES nfse_notas(id) ON DELETE CASCADE,
+  arquivo_id BIGINT NOT NULL REFERENCES nfse_processo_arquivos(id) ON DELETE CASCADE,
+  tipo_arquivo TEXT NOT NULL CHECK (tipo_arquivo IN ('xml', 'pdf')),
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  UNIQUE (nota_id, tipo_arquivo)
+);
+CREATE INDEX IF NOT EXISTS idx_nfse_nota_documentos_arquivo ON nfse_nota_documentos (arquivo_id);

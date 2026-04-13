@@ -13,7 +13,7 @@ from typing import Any, Optional
 from .arquivos_repo import garantir_schema_nfse_processo_arquivos
 from .db import get_conn
 from .execucoes_repo import atualizar_status_execucao, garantir_schema_nfse_execucoes
-from .notas_repo import obter_resumo_processo, garantir_schema_nfse_notas
+from .notas_repo import obter_resumo_processo, garantir_schema_nfse_notas, vincular_documentos_processo
 from .processos_repo import (
     atualizar_status_processo,
     atualizar_totais_processo,
@@ -90,6 +90,14 @@ def _run_with_process_inner(cfg: ProcessRunConfig, logger=None):
 
         _assert_process_not_cancelled(cfg.processo_id)
         num_xml, num_pdf, num_relatorio, total_registrados = register_process_files(cfg, resultados_execucao)
+        vinculacao_docs = vincular_documentos_processo(cfg.processo_id)
+        logger_cleanup.info(
+            "[VinculosDocs] Processo %s: %s nota(s), %s XML(s), %s PDF(s).",
+            cfg.processo_id,
+            vinculacao_docs.get("notas_analisadas", 0),
+            vinculacao_docs.get("xml_vinculados", 0),
+            vinculacao_docs.get("pdf_vinculados", 0),
+        )
 
         resumo = obter_resumo_processo(cfg.processo_id)
         total_notas = resumo.get("total_notas", 0)
