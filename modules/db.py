@@ -25,6 +25,7 @@ def ensure_database_extensions() -> None:
         sslmode=settings.db_sslmode or "require",
     )
     try:
+        conn.execute("SET TIME ZONE 'UTC'")
         with conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
         conn.commit()
@@ -42,6 +43,7 @@ def get_conn():
         sslmode=settings.db_sslmode or "require",
     )
     try:
+        conn.execute("SET TIME ZONE 'UTC'")
         yield conn
         conn.commit()
     except Exception:

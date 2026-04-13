@@ -18,6 +18,7 @@ from .fiscal_status import (
     has_material_monetary_difference,
     MONETARY_TOLERANCE,
 )
+from .timezone_utils import normalize_utc_datetimes
 
 
 STATUS_EXPR = build_sql_status_expr("n")
@@ -240,7 +241,7 @@ def listar_regras_atribuicao() -> List[dict]:
             ORDER BY prioridade ASC, id ASC
             """
         ).fetchall()
-    return [dict(r) for r in rows]
+    return [normalize_utc_datetimes(dict(r)) for r in rows]
 
 
 def _listar_regras_ativas() -> List[dict]:
@@ -257,7 +258,7 @@ def criar_regra_atribuicao(campo: str, operador: str, valor: str, responsavel: s
             """,
             (_clean_text(campo), _clean_text(operador), _clean_text(valor), _clean_text(responsavel), prioridade, bool(ativo)),
         ).fetchone()
-    return dict(row)
+    return normalize_utc_datetimes(dict(row))
 
 
 def atualizar_regra_atribuicao(regra_id: int, campo: str, operador: str, valor: str, responsavel: str, prioridade: int, ativo: bool) -> Optional[dict]:
@@ -277,7 +278,7 @@ def atualizar_regra_atribuicao(regra_id: int, campo: str, operador: str, valor: 
             """,
             (_clean_text(campo), _clean_text(operador), _clean_text(valor), _clean_text(responsavel), prioridade, bool(ativo), regra_id),
         ).fetchone()
-    return dict(row) if row else None
+    return normalize_utc_datetimes(dict(row)) if row else None
 
 
 def excluir_regra_atribuicao(regra_id: int) -> bool:
@@ -839,7 +840,7 @@ def listar_notas_por_processo(
             params
         ).fetchone()
 
-    return [dict(r) for r in rows], _extract_total(total_row)
+    return [normalize_utc_datetimes(dict(r)) for r in rows], _extract_total(total_row)
 
 
 def listar_notas_agrupadas(filters: Optional[dict] = None, page: int = 1, page_size: int = 200) -> tuple[List[dict], int]:
@@ -927,7 +928,7 @@ def listar_notas_agrupadas(filters: Optional[dict] = None, page: int = 1, page_s
             params
         ).fetchone()
 
-    return [dict(r) for r in rows], _extract_total(total_row)
+    return [normalize_utc_datetimes(dict(r)) for r in rows], _extract_total(total_row)
 
 
 def listar_empresas_e_contadores_fila(filters: Optional[dict] = None) -> Dict[str, Any]:

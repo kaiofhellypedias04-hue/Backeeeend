@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any, List
 
 from .db import get_conn
 from psycopg.types.json import Jsonb
+from .timezone_utils import normalize_utc_datetimes
 
 
 def garantir_schema_nfse_execucoes():
@@ -62,7 +63,7 @@ def atualizar_status_execucao(processo_id: str, status: str, started_at: Optiona
 
 def _row_to_dict(row):
     try:
-        return dict(row)
+        return normalize_utc_datetimes(dict(row))
     except Exception:
         return row
 

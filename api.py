@@ -21,7 +21,7 @@ import uuid
 import zipfile
 import csv
 from pathlib import Path
-from datetime import datetime, date, timedelta
+from datetime import date, datetime, timedelta
 from threading import Thread
 from typing import Optional, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -90,6 +90,7 @@ from modules.scheduler import (
     iniciar_agendamento, parar_agendamento, listar_agendamentos,
     restaurar_agendamentos_do_banco,
 )
+from modules.timezone_utils import now_utc
 from modules.cert_manager import (
     adicionar_certificado, editar_certificado, excluir_certificado,
     redefinir_senha_certificado,
@@ -410,7 +411,7 @@ def health():
         "status": "ok",
         "version": settings.app_version,
         "environment": settings.app_env,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
         "dispatcher": get_dispatcher_debug_snapshot(),
     }
 
@@ -426,7 +427,7 @@ def health_db():
             "status": "ok",
             "database": "ok",
             "result": row["?column?"] if isinstance(row, dict) and "?column?" in row else 1,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now_utc().isoformat(),
         }
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database_unavailable: {exc}")
@@ -694,7 +695,7 @@ def agendar_execucao(req: ExecRequest):
 
     def _segundos_ate_proximo_horario() -> float:
         """Calcula quantos segundos faltam para o próximo disparo no horário configurado."""
-        agora = datetime.now()
+        agora = now_utc()
         alvo = agora.replace(hour=hora_h, minute=hora_m, second=0, microsecond=0)
         if alvo <= agora:
             # Horário já passou hoje — próximo disparo é amanhã
@@ -702,7 +703,7 @@ def agendar_execucao(req: ExecRequest):
         return (alvo - agora).total_seconds()
 
     def _calcular_proxima_execucao() -> datetime:
-        agora = datetime.now()
+        agora = now_utc()
         alvo = agora.replace(hour=hora_h, minute=hora_m, second=0, microsecond=0)
         if alvo <= agora:
             alvo += timedelta(days=1)
@@ -864,13 +865,13 @@ def cancel_processo(processo_id: str):
     atualizar_status_processo(
         processo_id,
         StatusEnum.cancelled,
-        finished_at=datetime.now(),
+        finished_at=now_utc(),
         error_message=message,
     )
     atualizar_status_execucao(
         processo_id,
         "cancelled",
-        finished_at=datetime.now(),
+        finished_at=now_utc(),
         error=message,
         traceback="api_manual_cancel",
     )
@@ -1497,5 +1498,5 @@ def info_sistema():
         "credentials_json_path": str(settings.credentials_json_path),
         "temp_dir": str(settings.temp_dir),
         "s3_configured": is_s3_configured(),
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now_utc().isoformat(),
     }

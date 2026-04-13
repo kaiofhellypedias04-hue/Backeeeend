@@ -6,6 +6,7 @@ from typing import Optional, List, Any
 
 from .db import get_conn
 from .schemas import ProcessoCreate, ProcessoResponse, StatusEnum, normalize_tipo_nota
+from .timezone_utils import ensure_utc_datetime
 
 
 def garantir_schema_nfse_processos():
@@ -50,9 +51,9 @@ def _row_to_processo_response(row) -> ProcessoResponse:
         start_date=row["start_date"],
         end_date=row["end_date"],
         status=row["status"],
-        created_at=row["created_at"],
-        started_at=row["started_at"],
-        finished_at=row["finished_at"],
+        created_at=ensure_utc_datetime(row["created_at"]),
+        started_at=ensure_utc_datetime(row["started_at"]),
+        finished_at=ensure_utc_datetime(row["finished_at"]),
         total_notas=row["total_notas"] or 0,
         total_xml=row["total_xml"] or 0,
         total_pdf=row["total_pdf"] or 0,

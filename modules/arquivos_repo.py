@@ -6,6 +6,7 @@ from typing import Any, List, Optional
 
 from .db import get_conn
 from .schemas import TipoArquivoEnum, ArquivoResponse
+from .timezone_utils import normalize_utc_datetimes
 
 
 def garantir_schema_nfse_processo_arquivos():
@@ -33,7 +34,7 @@ def _uuid_to_str(value: Any) -> Optional[str]:
 
 
 def _row_to_arquivo_response(row) -> ArquivoResponse:
-    data = dict(row)
+    data = normalize_utc_datetimes(dict(row))
     data["processo_id"] = _uuid_to_str(data.get("processo_id"))
     return ArquivoResponse(**data)
 

@@ -13,6 +13,7 @@ from modules.execucoes_repo import criar_execucao
 from modules.processos_repo import criar_processo, obter_processo
 from modules.schemas import ProcessoCreate, StatusEnum, normalize_login_type
 from modules.settings import get_settings
+from modules.timezone_utils import now_utc
 
 
 def _worker_base_dir(alias: str) -> str:
@@ -45,7 +46,7 @@ class Executor:
 
     def execute(self, input_payload: Dict[str, Any], debug: bool = False) -> Dict[str, Any]:
         logger = StructuredLogger("executor")
-        started = datetime.utcnow()
+        started = now_utc()
         execution_id = input_payload.get("executionId", "unknown")
         logger.info("Execution started", {"executionId": execution_id})
 
@@ -87,7 +88,7 @@ class Executor:
                     status=WorkerStatus.COMPLETED,
                     executionId=execution_id,
                     startedAt=started,
-                    finishedAt=datetime.utcnow(),
+                    finishedAt=now_utc(),
                     result={"processed": True, "processo_id": proc_id},
                     logs=logger.get_logs(),
                 )
@@ -99,7 +100,7 @@ class Executor:
                 status=WorkerStatus.FAILED,
                 executionId=execution_id,
                 startedAt=started,
-                finishedAt=datetime.utcnow(),
+                finishedAt=now_utc(),
                 errorCode=ErrorCode.PROCESSING_ERROR,
                 errorMessage=error_message,
                 logs=logger.get_logs(),
@@ -113,7 +114,7 @@ class Executor:
                 status=WorkerStatus.FAILED,
                 executionId=execution_id,
                 startedAt=started,
-                finishedAt=datetime.utcnow(),
+                finishedAt=now_utc(),
                 errorCode=ErrorCode.UNEXPECTED_ERROR,
                 errorMessage=str(e),
                 logs=logger.get_logs(),

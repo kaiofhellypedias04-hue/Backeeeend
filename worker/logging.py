@@ -1,8 +1,8 @@
 import json
 import time
-from datetime import datetime
 from typing import Dict, Any, List
 from pathlib import Path
+from modules.timezone_utils import now_utc
 
 MAX_LOG_CHARS = 10000
 
@@ -32,7 +32,7 @@ class StructuredLogger:
             return
 
         record = {
-            'timestamp': datetime.utcnow().isoformat(),
+            'timestamp': now_utc().isoformat(),
             'name': self.name,
             'level': level,
             'message': self._truncate(message),

@@ -6,7 +6,6 @@ import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -30,6 +29,7 @@ from .storage import (
     upload_relatorio,
     upload_xml,
 )
+from .timezone_utils import now_utc
 
 logger_cleanup = logging.getLogger("cleanup")
 
@@ -73,8 +73,8 @@ def _run_with_process_inner(cfg: ProcessRunConfig, logger=None):
     garantir_schema_nfse_notas()
 
     _assert_process_not_cancelled(cfg.processo_id)
-    atualizar_status_processo(cfg.processo_id, StatusEnum.running, datetime.now())
-    atualizar_status_execucao(cfg.processo_id, "running", datetime.now())
+    atualizar_status_processo(cfg.processo_id, StatusEnum.running, now_utc())
+    atualizar_status_execucao(cfg.processo_id, "running", now_utc())
 
     try:
         resultados_execucao = run_processing_without_process(cfg, logger)
@@ -137,8 +137,8 @@ def _run_with_process_inner(cfg: ProcessRunConfig, logger=None):
                 f"Motivo: {resultado_cleanup.get('motivo')}"
             )
 
-        atualizar_status_processo(cfg.processo_id, StatusEnum.completed, finished_at=datetime.now())
-        atualizar_status_execucao(cfg.processo_id, "completed", finished_at=datetime.now())
+        atualizar_status_processo(cfg.processo_id, StatusEnum.completed, finished_at=now_utc())
+        atualizar_status_execucao(cfg.processo_id, "completed", finished_at=now_utc())
         return resultados_execucao
 
     except ProcessCancelledError as e:
@@ -146,13 +146,13 @@ def _run_with_process_inner(cfg: ProcessRunConfig, logger=None):
         atualizar_status_processo(
             cfg.processo_id,
             StatusEnum.cancelled,
-            finished_at=datetime.now(),
+            finished_at=now_utc(),
             error_message=str(e),
         )
         atualizar_status_execucao(
             cfg.processo_id,
             "cancelled",
-            finished_at=datetime.now(),
+            finished_at=now_utc(),
             error=str(e),
             traceback="process_cancelled",
         )
@@ -164,13 +164,13 @@ def _run_with_process_inner(cfg: ProcessRunConfig, logger=None):
         atualizar_status_processo(
             cfg.processo_id,
             StatusEnum.failed,
-            finished_at=datetime.now(),
+            finished_at=now_utc(),
             error_message=error_message,
         )
         atualizar_status_execucao(
             cfg.processo_id,
             "failed",
-            finished_at=datetime.now(),
+            finished_at=now_utc(),
             error=error_message,
             traceback=traceback.format_exc(),
         )

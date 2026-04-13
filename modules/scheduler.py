@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Callable, Dict, Any, List, Optional
 
 from .db import get_conn
+from .timezone_utils import now_utc, normalize_utc_datetimes
 
 # Jobs em memória: { job_id: { "ativo": bool, thread, ... } }
 _jobs: Dict[str, Dict[str, Any]] = {}
@@ -73,7 +74,7 @@ def iniciar_agendamento(
 ) -> str:
     garantir_schema_agendamentos()
 
-    agora = datetime.now()
+    agora = now_utc()
     proxima = agora  # primeira execução imediata
 
     # Persistir no banco
@@ -112,7 +113,7 @@ def iniciar_agendamento(
     def loop():
         while _jobs.get(job_id, {}).get("ativo"):
             erro_str = None
-            agora_exec = datetime.now()
+            agora_exec = now_utc()
             try:
                 with _lock:
                     if job_id in _jobs:
@@ -128,7 +129,7 @@ def iniciar_agendamento(
                 erro_str = str(e)
                 print(f"[SCHEDULER ERRO] job={job_id} erro={e}")
 
-            proxima_dt = datetime.now() + timedelta(seconds=intervalo_segundos)
+            proxima_dt = now_utc() + timedelta(seconds=intervalo_segundos)
             with _lock:
                 if job_id in _jobs:
                     _jobs[job_id]["proxima_execucao"] = proxima_dt.isoformat()
@@ -176,7 +177,7 @@ def listar_agendamentos() -> List[Dict[str, Any]]:
             ).fetchall()
 
         for row in rows:
-            d = dict(row)
+            d = normalize_utc_datetimes(dict(row))
             job_id = d["job_id"]
             em_memoria = job_id in _jobs and _jobs[job_id].get("ativo", False)
             d["running"] = em_memoria
