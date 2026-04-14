@@ -146,6 +146,13 @@ class ExecRequest(BaseModel):
     )
 
 
+def _validar_intervalo_execucao(start: date, end: date) -> None:
+    if start > end:
+        raise HTTPException(status_code=400, detail="'start' não pode ser maior que 'end'")
+    if (end - start).days > 31:
+        raise HTTPException(status_code=400, detail="DATA SUPERIOR A 31 DIAS")
+
+
 class CredencialCreate(BaseModel):
     alias: str
     cpf_cnpj: str
@@ -627,8 +634,7 @@ def deletar_credencial(alias: str):
 
 @app.post("/executar")
 def executar(req: ExecRequest):
-    if req.start > req.end:
-        raise HTTPException(status_code=400, detail="'start' não pode ser maior que 'end'")
+    _validar_intervalo_execucao(req.start, req.end)
 
     logger.info(
         "Requisicao /executar recebida",
@@ -696,6 +702,8 @@ def agendar_execucao(req: ExecRequest):
     - Se o horário ainda não chegou hoje, a primeira execução será hoje.
     - A cada execução o período é calculado como os últimos 30 dias corridos.
     """
+    _validar_intervalo_execucao(req.start, req.end)
+
     aliases_validos = _get_aliases_validos(req.login_type)
     invalidos = [a for a in req.cert_aliases if a not in aliases_validos]
     if invalidos:
