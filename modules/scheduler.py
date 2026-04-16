@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Callable, Dict, Any, List, Optional
 
 from .db import get_conn
-from .timezone_utils import now_utc, normalize_utc_datetimes
+from .timezone_utils import normalize_utc_datetimes, now_sao_paulo
 
 # Jobs em memória: { job_id: { "ativo": bool, thread, ... } }
 _jobs: Dict[str, Dict[str, Any]] = {}
@@ -75,7 +75,7 @@ def iniciar_agendamento(
 ) -> str:
     garantir_schema_agendamentos()
 
-    agora = now_utc()
+    agora = now_sao_paulo()
     proxima = first_run_at or agora  # compatibilidade: execução imediata por padrão
 
     # Persistir no banco
@@ -120,7 +120,7 @@ def iniciar_agendamento(
                 except Exception:
                     alvo_execucao = None
                 if alvo_execucao is not None:
-                    restante_ate_execucao = max(0.0, (alvo_execucao - now_utc()).total_seconds())
+                    restante_ate_execucao = max(0.0, (alvo_execucao - now_sao_paulo()).total_seconds())
                     while restante_ate_execucao > 0 and _jobs.get(job_id, {}).get("ativo"):
                         time.sleep(min(30, restante_ate_execucao))
                         restante_ate_execucao -= 30
@@ -128,7 +128,7 @@ def iniciar_agendamento(
                         break
 
             erro_str = None
-            agora_exec = now_utc()
+            agora_exec = now_sao_paulo()
             try:
                 with _lock:
                     if job_id in _jobs:
@@ -144,7 +144,7 @@ def iniciar_agendamento(
                 erro_str = str(e)
                 print(f"[SCHEDULER ERRO] job={job_id} erro={e}")
 
-            proxima_dt = now_utc() + timedelta(seconds=intervalo_segundos)
+            proxima_dt = now_sao_paulo() + timedelta(seconds=intervalo_segundos)
             with _lock:
                 if job_id in _jobs:
                     _jobs[job_id]["proxima_execucao"] = proxima_dt.isoformat()

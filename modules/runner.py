@@ -21,6 +21,7 @@ from .processos_repo import obter_status_processo
 from .run_state_repo import garantir_schema_run_state, upsert_state
 from .schemas import ProcessCancelledError
 from .spreadsheet import atualizar_planilha_incremental
+from .timezone_utils import today_sao_paulo
 
 DEFAULT_CHUNK_DAYS_FALLBACK = 5
 XML_MICROBATCH_SIZE = 100
@@ -107,14 +108,17 @@ def _iter_file_batches(file_paths: list[str], batch_size: int):
 
 def _resolver_intervalo_automatico(cfg: RunConfig, cert_alias: str) -> tuple[date, date]:
     """Resolve o intervalo automatico para processamento."""
-    hoje = date.today()
+    hoje = today_sao_paulo()
 
     if cfg.start is not None and cfg.end is not None:
         start = cfg.start
         end = cfg.end
     else:
-        end = hoje
-        start = hoje - timedelta(days=29)
+        dias_normalizados = int(getattr(cfg, "lookback_days", 30) or 30)
+        if dias_normalizados < 1:
+            dias_normalizados = 30
+        end = hoje - timedelta(days=1)
+        start = end - timedelta(days=dias_normalizados - 1)
 
     if end > hoje:
         end = hoje

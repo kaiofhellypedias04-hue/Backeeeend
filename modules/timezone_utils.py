@@ -1,14 +1,24 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 UTC = timezone.utc
+SAO_PAULO_TZ = ZoneInfo("America/Sao_Paulo")
 
 
 def now_utc() -> datetime:
     return datetime.now(UTC)
+
+
+def now_sao_paulo() -> datetime:
+    return datetime.now(SAO_PAULO_TZ)
+
+
+def today_sao_paulo() -> date:
+    return now_sao_paulo().date()
 
 
 def ensure_utc_datetime(value: Any) -> Any:

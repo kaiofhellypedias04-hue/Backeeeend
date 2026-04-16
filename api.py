@@ -90,7 +90,7 @@ from modules.scheduler import (
     iniciar_agendamento, parar_agendamento, listar_agendamentos,
     restaurar_agendamentos_do_banco,
 )
-from modules.timezone_utils import now_utc
+from modules.timezone_utils import now_sao_paulo, now_utc, today_sao_paulo
 from modules.cert_manager import (
     adicionar_certificado, editar_certificado, excluir_certificado,
     redefinir_senha_certificado,
@@ -228,6 +228,25 @@ def _build_run_config(req: ExecRequest, cert_alias: str) -> RunConfig:
     )
 
 
+def _build_automatic_run_config(req: ExecRequest, cert_alias: str, start: date, end: date) -> RunConfig:
+    return RunConfig(
+        modo="manual",
+        base_dir=_get_data_dir(cert_alias),
+        certs_json_path=str(settings.certs_json_path),
+        credentials_json_path=str(settings.credentials_json_path),
+        cert_aliases=[cert_alias],
+        start=start,
+        end=end,
+        headless=req.headless,
+        lookback_days=req.lookback_days,
+        use_chunk_days=req.use_chunk_days,
+        chunk_days=req.chunk_days,
+        consultar_api=req.consultar_api,
+        login_type=normalize_login_type(req.login_type),
+        tipo_nota=normalize_tipo_nota(req.tipo_nota),
+    )
+
+
 def _queue_payload_from_config(cfg: RunConfig, cert_alias: str) -> dict:
     return {
         "modo": cfg.modo,
@@ -263,18 +282,20 @@ def _alias_to_client_id(alias: str) -> str:
 
 
 def _ultimos_dias(dias: int | None = 30) -> tuple[date, date]:
-    """Retorna (hoje - (dias-1), hoje) para a janela total informada."""
-    hoje = date.today()
+    """Retorna a janela automatica encerrada em ontem."""
+    hoje = today_sao_paulo()
     dias_normalizados = int(dias or 30)
     if dias_normalizados < 1:
         dias_normalizados = 30
-    return hoje - timedelta(days=dias_normalizados - 1), hoje
+    fim = hoje - timedelta(days=1)
+    inicio = fim - timedelta(days=dias_normalizados - 1)
+    return inicio, fim
 
 
 def _calcular_proxima_execucao_horario(hora_str: str) -> datetime:
     """Retorna a próxima ocorrência futura válida para o horário informado."""
     hora_h, hora_m = map(int, hora_str.split(":"))
-    agora = now_utc()
+    agora = now_sao_paulo()
     alvo = agora.replace(hour=hora_h, minute=hora_m, second=0, microsecond=0)
     if alvo <= agora:
         alvo += timedelta(days=1)
@@ -395,8 +416,15 @@ def startup_event():
                         end_date=fim,
                     )
                     proc_id = criar_processo(proc_create)
-                    criar_execucao(execution_id, proc_id, payload)
-                    cfg = _build_run_config(req, alias)
+                    exec_payload = {
+                        **payload,
+                        "start": inicio.isoformat(),
+                        "end": fim.isoformat(),
+                        "agendado": True,
+                        "hora_execucao": req.hora_execucao,
+                    }
+                    criar_execucao(execution_id, proc_id, exec_payload)
+                    cfg = _build_automatic_run_config(req, alias, inicio, fim)
                     enqueue_dispatch_item(
                         job_id=execution_id,
                         processo_id=proc_id,
@@ -805,7 +833,7 @@ def agendar_execucao(req: ExecRequest):
 
     def executar_agendado():
         # Aguarda até o horário configurado antes de processar
-        espera = (_calcular_proxima_execucao() - now_utc()).total_seconds()
+        espera = (_calcular_proxima_execucao() - now_sao_paulo()).total_seconds()
         print(f"[AGENDAMENTO {job_id}] Aguardando {int(espera)}s até {hora_str} para iniciar processamento...")
 
         # Sleep em fatias de 30s para responder ao cancelamento rapidamente
