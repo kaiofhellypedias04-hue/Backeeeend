@@ -16,7 +16,6 @@ import io
 import logging
 import os
 import re
-import time
 import uuid
 import zipfile
 import csv
@@ -831,28 +830,18 @@ def agendar_execucao(req: ExecRequest):
                     payload_json=_queue_payload_from_config(cfg, alias),
                 )
 
-    def executar_agendado():
-        # Aguarda até o horário configurado antes de processar
-        espera = (_calcular_proxima_execucao() - now_sao_paulo()).total_seconds()
-        print(f"[AGENDAMENTO {job_id}] Aguardando {int(espera)}s até {hora_str} para iniciar processamento...")
-
-        # Sleep em fatias de 30s para responder ao cancelamento rapidamente
-        restante = espera
-        while restante > 0:
-            time.sleep(min(30, restante))
-            restante -= 30
-
-        _executar_agendado_sem_espera()
+    first_run_at = _calcular_proxima_execucao()
 
     iniciar_agendamento(
         job_id=job_id,
-        func=executar_agendado,
+        func=_executar_agendado_sem_espera,
         intervalo_segundos=86400,
         descricao=f"Automático diário {hora_str} — últimos {req.lookback_days} dias — {', '.join(req.cert_aliases)}",
         payload=payload,
+        first_run_at=first_run_at,
     )
 
-    proxima = _calcular_proxima_execucao()
+    proxima = first_run_at
     inicio, fim = _ultimos_dias(req.lookback_days)
     return {
         "success": True,
