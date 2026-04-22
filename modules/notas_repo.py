@@ -89,6 +89,7 @@ def garantir_schema_nfse_notas():
           status_fila_manual TEXT,
           prioridade_manual TEXT,
           responsavel TEXT,
+          status_documental_pdf TEXT,
           tipo_nota TEXT,
           parte_exibicao_nome TEXT,
           parte_exibicao_doc TEXT,
@@ -116,6 +117,7 @@ def garantir_schema_nfse_notas():
         conn.execute("ALTER TABLE nfse_notas ADD COLUMN IF NOT EXISTS status_fila_manual TEXT")
         conn.execute("ALTER TABLE nfse_notas ADD COLUMN IF NOT EXISTS prioridade_manual TEXT")
         conn.execute("ALTER TABLE nfse_notas ADD COLUMN IF NOT EXISTS responsavel TEXT")
+        conn.execute("ALTER TABLE nfse_notas ADD COLUMN IF NOT EXISTS status_documental_pdf TEXT")
         conn.execute("ALTER TABLE nfse_notas ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL DEFAULT now()")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_nfse_notas_cert_chave ON nfse_notas (cert_alias, chave_nfse)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_nfse_notas_processo ON nfse_notas (processo_id)")
@@ -413,6 +415,13 @@ def _status_compare(
     return "divergente" if has_material_monetary_difference(xml_value, expected_value, tolerance) else "ok"
 
 
+def _normalize_status_documental_pdf(value: Any) -> Optional[str]:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"cancelada", "substituida", "normal"}:
+        return normalized
+    return None
+
+
 def _build_campos_ausentes_xml(data: dict) -> Optional[str]:
     campos_obrigatorios = [
         "N° Documento",
@@ -429,7 +438,13 @@ def _build_campos_ausentes_xml(data: dict) -> Optional[str]:
     return " | ".join(faltantes) if faltantes else None
 
 
-def salvar_nota_nfse(cert_alias: str, processo_id: str | None, data: dict, arquivo_origem: str | None = None) -> str:
+def salvar_nota_nfse(
+    cert_alias: str,
+    processo_id: str | None,
+    data: dict,
+    arquivo_origem: str | None = None,
+    status_documental_pdf: str | None = None,
+) -> str:
     tipo_nota = "tomados"
 
     if processo_id:
@@ -499,6 +514,7 @@ def salvar_nota_nfse(cert_alias: str, processo_id: str | None, data: dict, arqui
     csrf_calculado = _to_decimal(data.get("_CSRF_Calculado"))
     iss_calculado = _to_decimal(data.get("_ISS_Calculado"))
     responsavel_automatico = resolver_responsavel_automatico(cert_alias, data)
+    status_documental_pdf = _normalize_status_documental_pdf(status_documental_pdf)
 
     with get_conn() as conn:
         row = conn.execute(
@@ -517,6 +533,7 @@ def salvar_nota_nfse(cert_alias: str, processo_id: str | None, data: dict, arqui
               campos_ausentes_xml, alertas_fiscais,
               irrf_calculado, csrf_calculado, iss_calculado,
               responsavel,
+              status_documental_pdf,
               dados_completos, arquivo_origem,
               updated_at
             )
@@ -532,6 +549,7 @@ def salvar_nota_nfse(cert_alias: str, processo_id: str | None, data: dict, arqui
               %s,%s,%s,%s,%s,%s,
               %s,%s,
               %s,%s,%s,
+              %s,
               %s,
               %s,%s,
               now()
@@ -578,6 +596,7 @@ def salvar_nota_nfse(cert_alias: str, processo_id: str | None, data: dict, arqui
               csrf_calculado = EXCLUDED.csrf_calculado,
               iss_calculado = EXCLUDED.iss_calculado,
               responsavel = COALESCE(NULLIF(nfse_notas.responsavel, ''), EXCLUDED.responsavel),
+              status_documental_pdf = COALESCE(EXCLUDED.status_documental_pdf, nfse_notas.status_documental_pdf),
               dados_completos = EXCLUDED.dados_completos,
               arquivo_origem = COALESCE(EXCLUDED.arquivo_origem, nfse_notas.arquivo_origem),
               updated_at = now()
@@ -601,6 +620,7 @@ def salvar_nota_nfse(cert_alias: str, processo_id: str | None, data: dict, arqui
                 campos_ausentes_xml, alertas_fiscais_txt,
                 irrf_calculado, csrf_calculado, iss_calculado,
                 responsavel_automatico,
+                status_documental_pdf,
                 Jsonb(data), arquivo_origem,
             ),
         ).fetchone()
@@ -824,6 +844,7 @@ def listar_notas_por_processo(
                    n.status_fila_manual,
                    n.prioridade_manual,
                    n.responsavel,
+                   n.status_documental_pdf,
                    n.created_at as dia_processado,
                    n.updated_at
             FROM nfse_notas n
@@ -904,6 +925,7 @@ def listar_notas_agrupadas(filters: Optional[dict] = None, page: int = 1, page_s
                    n.status_fila_manual,
                    n.prioridade_manual,
                    n.responsavel,
+                   n.status_documental_pdf,
                    n.created_at as dia_processado,
                    n.created_at,
                    n.updated_at

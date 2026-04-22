@@ -422,14 +422,22 @@ def inferir_ano_mes_do_xml(caminho_xml: str) -> tuple[int, int] | None:
     return None
 
 
-def distribuir_por_competencia(download_dir: str, base_dir_cert: str) -> dict[str, list[str]]:
+def distribuir_por_competencia(download_dir: str, base_dir_cert: str) -> dict[str, list[str] | int]:
     """Move XML/PDF baixados para <YYYY>/<MM>/xml|pdf baseado EXCLUSIVAMENTE em dhProc (processamento).
     
     Fonte de data:
     - dhProc (data/hora de processamento) - ÚNICA fonte
     - Mês atual - último recurso (apenas se dhProc não for encontrado)
     """
-    moved = {"xml": [], "pdf": []}
+    moved = {
+        "xml": [],
+        "pdf": [],
+        "xml_encontrados_tmp": 0,
+        "xml_duplicados": 0,
+        "xml_falhas_distribuicao": 0,
+        "pdf_duplicados": 0,
+        "pdf_falhas_distribuicao": 0,
+    }
     if not os.path.isdir(download_dir):
         return moved
 
@@ -439,6 +447,8 @@ def distribuir_por_competencia(download_dir: str, base_dir_cert: str) -> dict[st
 
     arquivos = os.listdir(download_dir)
     xmls = [f for f in arquivos if f.lower().endswith('.xml')]
+
+    moved["xml_encontrados_tmp"] = len(xmls)
 
     for xml_name in xmls:
         xml_path = os.path.join(download_dir, xml_name)
@@ -479,16 +489,24 @@ def distribuir_por_competencia(download_dir: str, base_dir_cert: str) -> dict[st
         xml_dest = estrutura['xml_dir']
         pdf_dest = estrutura['pdf_dir']
 
-        moved_xml = _move_sem_duplicar(xml_path, xml_dest)
-        if moved_xml:
-            moved['xml'].append(moved_xml)
+        moved_xml = _move_sem_duplicar_com_status(xml_path, xml_dest)
+        if moved_xml["status"] == "moved" and moved_xml["path"]:
+            moved["xml"].append(moved_xml["path"])
+        elif moved_xml["status"] == "duplicate":
+            moved["xml_duplicados"] += 1
+        else:
+            moved["xml_falhas_distribuicao"] += 1
 
         base = os.path.splitext(xml_name)[0]
         cand_pdf = os.path.join(download_dir, base + '.pdf')
         if os.path.exists(cand_pdf):
-            moved_pdf = _move_sem_duplicar(cand_pdf, pdf_dest)
-            if moved_pdf:
-                moved['pdf'].append(moved_pdf)
+            moved_pdf = _move_sem_duplicar_com_status(cand_pdf, pdf_dest)
+            if moved_pdf["status"] == "moved" and moved_pdf["path"]:
+                moved["pdf"].append(moved_pdf["path"])
+            elif moved_pdf["status"] == "duplicate":
+                moved["pdf_duplicados"] += 1
+            else:
+                moved["pdf_falhas_distribuicao"] += 1
 
     # PDFs soltos (sem XML) -> mês atual
     arquivos = os.listdir(download_dir)
@@ -497,21 +515,21 @@ def distribuir_por_competencia(download_dir: str, base_dir_cert: str) -> dict[st
         from datetime import datetime as _dt
         estrutura = criar_estrutura_pastas(base_dir_cert, data_referencia=_dt.now())
         for pdf_name in pdfs:
-            moved_pdf = _move_sem_duplicar(os.path.join(download_dir, pdf_name), estrutura['pdf_dir'])
-            if moved_pdf:
-                moved['pdf'].append(moved_pdf)
+            moved_pdf = _move_sem_duplicar_com_status(os.path.join(download_dir, pdf_name), estrutura['pdf_dir'])
+            if moved_pdf["status"] == "moved" and moved_pdf["path"]:
+                moved["pdf"].append(moved_pdf["path"])
+            elif moved_pdf["status"] == "duplicate":
+                moved["pdf_duplicados"] += 1
+            else:
+                moved["pdf_falhas_distribuicao"] += 1
 
     return moved
 
 
-def _move_sem_duplicar(src_path: str, dst_dir: str) -> str | None:
-    """Move arquivo para dst_dir evitando duplicações.
-
-    - Se já existir com o mesmo tamanho, não move (descarta duplicata) e retorna None.
-    - Se existir com tamanho diferente, cria sufixo _dupN.
-    """
+def _move_sem_duplicar_com_status(src_path: str, dst_dir: str) -> dict[str, str | None]:
+    """Move arquivo para dst_dir distinguindo movimento, duplicata e falha."""
     if not os.path.exists(src_path) or not os.path.isfile(src_path):
-        return None
+        return {"status": "missing", "path": None}
 
     base = os.path.basename(src_path)
     dst_path = os.path.join(dst_dir, base)
@@ -521,9 +539,8 @@ def _move_sem_duplicar(src_path: str, dst_dir: str) -> str | None:
             src_size = os.path.getsize(src_path)
             dst_size = os.path.getsize(dst_path)
             if src_size == dst_size:
-                # duplicata idêntica
                 os.remove(src_path)
-                return None
+                return {"status": "duplicate", "path": None}
 
             name, ext = os.path.splitext(base)
             n = 1
@@ -535,9 +552,19 @@ def _move_sem_duplicar(src_path: str, dst_dir: str) -> str | None:
                 n += 1
 
         shutil.move(src_path, dst_path)
-        return dst_path
+        return {"status": "moved", "path": dst_path}
     except Exception:
-        return None
+        return {"status": "error", "path": None}
+
+
+def _move_sem_duplicar(src_path: str, dst_dir: str) -> str | None:
+    """Move arquivo para dst_dir evitando duplicações.
+
+    - Se já existir com o mesmo tamanho, não move (descarta duplicata) e retorna None.
+    - Se existir com tamanho diferente, cria sufixo _dupN.
+    """
+    result = _move_sem_duplicar_com_status(src_path, dst_dir)
+    return result["path"] if result["status"] == "moved" else None
 
 
 def organizar_arquivos_baixados(download_dir, data_referencia, diretorio_base):

@@ -16,6 +16,7 @@ from .notas_repo import (
     gerar_chave_nfse,
     salvar_nota_nfse,
 )
+from .pdf_document_status import detect_document_status_from_pdf_path
 from .playwright_downloader import executar_fluxo_nfse_playwright
 from .processos_repo import obter_status_processo
 from .run_state_repo import garantir_schema_run_state, upsert_state
@@ -104,6 +105,15 @@ def _iter_file_batches(file_paths: list[str], batch_size: int):
         batch_size = len(file_paths) or 1
     for idx in range(0, len(file_paths), batch_size):
         yield file_paths[idx: idx + batch_size]
+
+
+def _resolve_pdf_path_for_xml(arquivo_origem: str | None) -> str | None:
+    if not arquivo_origem:
+        return None
+    xml_path = str(arquivo_origem)
+    if not xml_path.lower().endswith(".xml"):
+        return None
+    return f"{os.path.splitext(xml_path)[0]}.pdf"
 
 
 def _resolver_intervalo_automatico(cfg: RunConfig, cert_alias: str) -> tuple[date, date]:
@@ -235,7 +245,10 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                 "xml_paths": xml_paths,
                 "pdf_paths": pdf_paths,
                 "planilha_paths": [],
+                "xml_encontrados_tmp": int(moved.get("xml_encontrados_tmp") or 0),
                 "xml_movidos": len(xml_paths),
+                "xml_duplicados": int(moved.get("xml_duplicados") or 0),
+                "xml_falhas_distribuicao": int(moved.get("xml_falhas_distribuicao") or 0),
                 "pdf_movidos": len(pdf_paths),
                 "dados_extraidos": 0,
                 "notas_salvas": 0,
@@ -244,7 +257,17 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
             }
 
             if not xml_paths:
-                logger.info("Nenhum XML novo para processar neste chunk.")
+                if resultado["xml_duplicados"] > 0 and resultado["xml_falhas_distribuicao"] == 0:
+                    logger.info(
+                        "Nenhum XML novo para processar neste chunk; downloads eram duplicados legitimos.",
+                        {
+                            "xml_encontrados_tmp": resultado["xml_encontrados_tmp"],
+                            "xml_duplicados": resultado["xml_duplicados"],
+                        },
+                    )
+                    resultado["status"] = "deduplicado"
+                else:
+                    logger.info("Nenhum XML novo para processar neste chunk.")
                 return resultado
 
             notas_salvas = 0
@@ -306,11 +329,15 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                     _assert_not_cancelled()
                     try:
                         arquivo_origem = d.get("_arquivo_origem") or d.get("_Arquivo_Origem")
+                        status_documental_pdf = detect_document_status_from_pdf_path(
+                            _resolve_pdf_path_for_xml(arquivo_origem)
+                        )
                         salvar_nota_nfse(
                             cert_alias,
                             getattr(cfg, "processo_id", None),
                             d,
                             arquivo_origem=arquivo_origem,
+                            status_documental_pdf=status_documental_pdf,
                         )
                         notas_salvas += 1
                     except Exception as save_err:
@@ -358,7 +385,10 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                 "Consolidacao do chunk concluida",
                 {
                     "periodo": f"{periodo_start.isoformat()}..{periodo_end.isoformat()}",
+                    "xml_encontrados_tmp": resultado["xml_encontrados_tmp"],
                     "xml_movidos": len(xml_paths),
+                    "xml_duplicados": resultado["xml_duplicados"],
+                    "xml_falhas_distribuicao": resultado["xml_falhas_distribuicao"],
                     "pdf_movidos": len(pdf_paths),
                     "dados_extraidos": dados_extraidos_total,
                     "notas_salvas": notas_salvas,
@@ -390,6 +420,7 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
             total_xmls_baixados = 0
             houve_split_interno = False
             total_xml_movidos = 0
+            total_xml_duplicados = 0
             total_pdf_movidos = 0
             total_dados_extraidos = 0
             total_notas_salvas = 0
@@ -447,7 +478,22 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
 
                 processamento = _process_tmp_dir(tmp_dir, base_dir_cert, chunk_start, chunk_end)
 
-                if (total_xmls or 0) > 0 and processamento["xml_movidos"] == 0:
+                if (
+                    processamento["xml_encontrados_tmp"] > 0
+                    and processamento["xml_movidos"] == 0
+                    and processamento["xml_duplicados"] == 0
+                    and processamento["xml_falhas_distribuicao"] > 0
+                ):
+                    raise RuntimeError(
+                        f"Chunk {idx_chunk}/{len(chunks)} encontrou {processamento['xml_encontrados_tmp']} XML(s) no tmp, "
+                        "mas todos falharam na distribuicao."
+                    )
+
+                if (
+                    (total_xmls or 0) > 0
+                    and processamento["xml_movidos"] == 0
+                    and processamento["xml_duplicados"] == 0
+                ):
                     raise RuntimeError(
                         f"Chunk {idx_chunk}/{len(chunks)} baixou {total_xmls} XML(s), "
                         "mas nenhum XML novo foi distribuido/processado."
@@ -489,6 +535,7 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                 total_xmls_baixados += int(total_xmls or 0)
                 houve_split_interno = houve_split_interno or bool(need_to_split)
                 total_xml_movidos += int(processamento["xml_movidos"] or 0)
+                total_xml_duplicados += int(processamento["xml_duplicados"] or 0)
                 total_pdf_movidos += int(processamento["pdf_movidos"] or 0)
                 total_dados_extraidos += int(processamento["dados_extraidos"] or 0)
                 total_notas_salvas += int(processamento["notas_salvas"] or 0)
@@ -511,6 +558,7 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                 "xml_paths": list(dict.fromkeys(xml_paths_consolidados)),
                 "pdf_paths": list(dict.fromkeys(pdf_paths_consolidados)),
                 "xml_movidos": total_xml_movidos,
+                "xml_duplicados": total_xml_duplicados,
                 "pdf_movidos": total_pdf_movidos,
                 "dados_extraidos": total_dados_extraidos,
                 "notas_salvas": total_notas_salvas,
@@ -527,6 +575,7 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                     "total_chunks": len(chunks),
                     "xml_baixados": total_xmls_baixados,
                     "xml_movidos": total_xml_movidos,
+                    "xml_duplicados": total_xml_duplicados,
                     "pdf_movidos": total_pdf_movidos,
                     "dados_extraidos": total_dados_extraidos,
                     "notas_salvas": total_notas_salvas,
