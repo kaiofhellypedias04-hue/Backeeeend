@@ -3,10 +3,12 @@ from __future__ import annotations
 import glob
 import os
 import random
+import re
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from .downloader import criar_estrutura_pastas, distribuir_por_competencia
@@ -110,10 +112,57 @@ def _iter_file_batches(file_paths: list[str], batch_size: int):
 def _resolve_pdf_path_for_xml(arquivo_origem: str | None) -> str | None:
     if not arquivo_origem:
         return None
-    xml_path = str(arquivo_origem)
-    if not xml_path.lower().endswith(".xml"):
+    xml_path = Path(str(arquivo_origem))
+    if xml_path.suffix.lower() != ".xml":
         return None
-    return f"{os.path.splitext(xml_path)[0]}.pdf"
+    pdf_same_name = xml_path.with_suffix(".pdf")
+    if pdf_same_name.exists() and pdf_same_name.is_file():
+        return str(pdf_same_name)
+
+    def _strip_suffixes(stem: str) -> str:
+        normalized = str(stem or "").strip()
+        while True:
+            updated = re.sub(r"(?:_dup\d+|_\d+)$", "", normalized, flags=re.IGNORECASE)
+            if updated == normalized:
+                return normalized
+            normalized = updated
+
+    xml_stem = xml_path.stem
+    xml_base = _strip_suffixes(xml_stem).lower()
+    candidates: list[tuple[int, int, str]] = []
+
+    search_dirs: list[Path] = []
+    for directory in (xml_path.parent, xml_path.parent.parent / "pdf"):
+        if directory.exists() and directory.is_dir():
+            normalized_dir = str(directory.resolve()).lower()
+            if normalized_dir not in {str(path.resolve()).lower() for path in search_dirs}:
+                search_dirs.append(directory)
+
+    for search_dir in search_dirs:
+        for pdf_path in search_dir.glob("*.pdf"):
+            if not pdf_path.is_file():
+                continue
+            pdf_stem = pdf_path.stem
+            pdf_base = _strip_suffixes(pdf_stem).lower()
+            score = -1
+
+            if pdf_stem.lower() == xml_stem.lower():
+                score = 400
+            elif pdf_base and pdf_base == xml_base:
+                score = 300
+            elif pdf_base and (pdf_base.startswith(xml_base) or xml_base.startswith(pdf_base)):
+                score = 200
+            elif xml_base and xml_base in pdf_stem.lower():
+                score = 100
+
+            if score >= 0:
+                candidates.append((score, len(pdf_stem), str(pdf_path)))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2].lower()))
+    return candidates[0][2]
 
 
 def _resolver_intervalo_automatico(cfg: RunConfig, cert_alias: str) -> tuple[date, date]:
@@ -329,9 +378,31 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                     _assert_not_cancelled()
                     try:
                         arquivo_origem = d.get("_arquivo_origem") or d.get("_Arquivo_Origem")
+                        pdf_path = _resolve_pdf_path_for_xml(arquivo_origem)
+                        if pdf_path:
+                            logger.info(
+                                "PDF encontrado para status documental",
+                                {
+                                    "xml": arquivo_origem,
+                                    "pdf": pdf_path,
+                                },
+                            )
+                        else:
+                            logger.info(
+                                "PDF nao encontrado para XML",
+                                {"xml": arquivo_origem},
+                            )
                         status_documental_pdf = detect_document_status_from_pdf_path(
-                            _resolve_pdf_path_for_xml(arquivo_origem)
+                            pdf_path
                         )
+                        if pdf_path and status_documental_pdf is None:
+                            logger.warning(
+                                "Falha de leitura/classificacao do PDF documental",
+                                {
+                                    "xml": arquivo_origem,
+                                    "pdf": pdf_path,
+                                },
+                            )
                         salvar_nota_nfse(
                             cert_alias,
                             getattr(cfg, "processo_id", None),
