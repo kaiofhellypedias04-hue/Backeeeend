@@ -1019,7 +1019,7 @@ class NFSeXMLConverter:
                 data = self.parse_xml(xml_content)
                 if data:
                     data['_Arquivo_Origem'] = os.path.basename(file_path)
-                    data['_arquivo_origem'] = os.path.basename(file_path)
+                    data['_arquivo_origem'] = file_path
                     if data['CNPJ/CPF'] and data['N° Documento']:
                         all_data.append(data)
                         print(f"✓ Processado: {os.path.basename(file_path)}")
