@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import unicodedata
 from pathlib import Path
 from typing import Optional
@@ -15,6 +16,9 @@ DOCUMENT_STATUS_VALUES = {
     DOCUMENT_STATUS_SUBSTITUIDA,
     DOCUMENT_STATUS_NORMAL,
 }
+
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_pdf_text(value: str) -> str:
@@ -42,14 +46,23 @@ def extract_pdf_text(pdf_path: str) -> str:
 
 def detect_document_status_from_pdf_path(pdf_path: str | None) -> Optional[str]:
     if not pdf_path:
+        logger.info("PDF nao encontrado para classificacao documental | pdf_path=%s | exists=false", pdf_path)
         return None
 
     path = Path(pdf_path)
     if not path.exists() or not path.is_file():
+        logger.info("PDF nao encontrado para classificacao documental | pdf_path=%s | exists=false", pdf_path)
         return None
 
     try:
-        return classify_pdf_document_status(extract_pdf_text(str(path)))
+        text = extract_pdf_text(str(path))
+        if not text.strip():
+            logger.info("Falha de leitura/classificacao do PDF documental | pdf_path=%s | text_empty=true", pdf_path)
+            return None
+
+        status = classify_pdf_document_status(text)
+        if status is not None:
+            logger.info("Status documental do PDF calculado | pdf_path=%s | status=%s", pdf_path, status)
+        return status
     except Exception:
         return None
-

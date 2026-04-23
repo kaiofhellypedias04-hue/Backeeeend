@@ -379,30 +379,25 @@ def run_processing(cfg: RunConfig, logger=None) -> list[dict[str, Any]]:
                     try:
                         arquivo_origem = d.get("_arquivo_origem") or d.get("_Arquivo_Origem")
                         pdf_path = _resolve_pdf_path_for_xml(arquivo_origem)
-                        if pdf_path:
+                        pdf_exists = bool(pdf_path and Path(pdf_path).exists() and Path(pdf_path).is_file())
+                        if pdf_exists:
                             logger.info(
-                                "PDF encontrado para status documental",
-                                {
-                                    "xml": arquivo_origem,
-                                    "pdf": pdf_path,
-                                },
+                                f"PDF encontrado para status documental | xml={arquivo_origem} | pdf={pdf_path} | pdf_exists=true"
                             )
                         else:
                             logger.info(
-                                "PDF nao encontrado para XML",
-                                {"xml": arquivo_origem},
+                                f"PDF nao encontrado para XML | xml={arquivo_origem} | pdf={pdf_path} | pdf_exists=false"
                             )
                         status_documental_pdf = detect_document_status_from_pdf_path(
                             pdf_path
                         )
-                        if pdf_path and status_documental_pdf is None:
-                            logger.warning(
-                                "Falha de leitura/classificacao do PDF documental",
-                                {
-                                    "xml": arquivo_origem,
-                                    "pdf": pdf_path,
-                                },
-                            )
+                        logger.info(
+                            "Status documental calculado | "
+                            f"xml={arquivo_origem} | "
+                            f"pdf={pdf_path} | "
+                            f"pdf_exists={'true' if pdf_exists else 'false'} | "
+                            f"status_documental_pdf={status_documental_pdf if status_documental_pdf is not None else 'none'}"
+                        )
                         salvar_nota_nfse(
                             cert_alias,
                             getattr(cfg, "processo_id", None),
